@@ -30,13 +30,24 @@ $is_admin = is_admin();
 $session_remaining = ensure_revizor_session_timeout();
 ensure_revizor_csrf_token();
 
+log_activity('page_view', ['page' => 'upload']);
+
 $conn = get_revizor_conn();
+$ots_db = get_ots_conn();
 
 $church_options = [];
-$church_result = get_ots_conn()->query("SELECT id, name FROM churches ORDER BY name ASC");
-if ($church_result) {
+$church_result = get_ots_conn()->query("SELECT id, name FROM CHURCHES ORDER BY name ASC");
+if ($church_result && $church_result->num_rows > 0) {
     while ($row = $church_result->fetch_assoc()) {
         $church_options[] = $row;
+    }
+} else {
+    // Fallback: konfigból (app.local.php)
+    $cfg = load_app_config();
+    if (!empty($cfg['churches']) && is_array($cfg['churches'])) {
+        foreach ($cfg['churches'] as $id => $name) {
+            $church_options[] = ['id' => $id, 'name' => $name];
+        }
     }
 }
 
@@ -159,7 +170,7 @@ if (defined('GN_TRANSACTION_TYPE_SPECIAL_TARGET_VIA_CONFERENCE')) $exp_types[] =
 if (defined('GN_TRANSACTION_TYPE_ACCEPTED_SUBTRACTION')) $exp_types[] = GN_TRANSACTION_TYPE_ACCEPTED_SUBTRACTION;
 
 if (empty($exp_types)) {
-    $tt_res = $conn->query("SELECT id, NAME FROM ots.TRANSACTION_TYPE");
+    $tt_res = $ots_db->query("SELECT id, NAME FROM TRANSACTION_TYPE");
     if ($tt_res) {
         while($tt = $tt_res->fetch_assoc()) {
             $name = mb_strtolower($tt['NAME'], 'UTF-8');
@@ -230,8 +241,9 @@ $conn->query("CREATE TABLE IF NOT EXISTS upload_log (
 function insert_ots_items($conn, $reconciliation_id, $record_id, $church_id, $exp_types, $extra_where = '') {
     $w = trim($extra_where);
     $w_clause = ($w !== '') ? " AND $w" : '';
-    $sql = "SELECT id, AMOUNT, TYPE, CASH_DOCUMENT_NUMBER, DATETIME FROM ots.TRANSACTIONS WHERE RECORD_ID = ? AND CHURCH_ID = ?$w_clause ORDER BY id";
-    $st = $conn->prepare($sql);
+    $ots_db = get_ots_conn();
+    $sql = "SELECT id, AMOUNT, TYPE, CASH_DOCUMENT_NUMBER, DATETIME FROM TRANSACTIONS WHERE RECORD_ID = ? AND CHURCH_ID = ?$w_clause ORDER BY id";
+    $st = $ots_db->prepare($sql);
     $st->bind_param("ii", $record_id, $church_id);
     $st->execute();
     $res = $st->get_result();
@@ -277,7 +289,7 @@ if (isset($_GET['saved']) && $_GET['saved'] === 'skip') {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token'])) {
         $message = "<div class='alert alert-danger'>CSRF token mismatch!</div>";
     } else {
     if (isset($_POST['save_skip_config'])) {
@@ -481,7 +493,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         try {
                             // Az OTS TRANSACTIONS táblájában keresünk egy egyező banki tételt (+/- 5 nap)
                             $ots_query = "SELECT MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETIME) AS ots_date 
-                                           FROM ots.TRANSACTIONS T
+                                           FROM TRANSACTIONS T
                                            WHERE CHURCH_ID = ? 
                                              AND DATETIME BETWEEN DATE_SUB(?, INTERVAL 5 DAY) AND DATE_ADD(?, INTERVAL 5 DAY)
                                              AND VIA_BANK <> 0
@@ -489,7 +501,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                            GROUP BY RECORD_ID 
                                            HAVING SUM(IF(T.TYPE IN ($exp_types_str), -1 * AMOUNT, AMOUNT)) = ?";
                             
-                            $stmt_ots = $conn->prepare($ots_query);
+                            $stmt_ots = $ots_db->prepare($ots_query);
                             if ($stmt_ots) {
                                 $stmt_ots->bind_param("isssd", $church_id, $bank_date, $bank_date, $bank_date, $bank_amount);
                                 $stmt_ots->execute();
@@ -519,7 +531,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     $auto_matched++;
                                 } elseif (!$ots_result || $ots_result->num_rows !== 1) {
                                     // Nem talált OTS-t, próbáljuk a transfers_to_conference-t
-                                    $tc_stmt = $conn->prepare("SELECT AMOUNT, CONCAT(YEAR, '-', LPAD(MONTH, 2, '0'), '-', LPAD(DAY, 2, '0')) AS ots_date, CASH_DOCUMENT_NUMBER AS ots_doc FROM ots.transfers_to_conference WHERE CHURCH_ID = ? AND VIA_BANK = 1 AND AMOUNT = ABS(?) AND CONCAT(YEAR, '-', LPAD(MONTH, 2, '0'), '-', LPAD(DAY, 2, '0')) BETWEEN DATE_SUB(?, INTERVAL 45 DAY) AND DATE_ADD(?, INTERVAL 45 DAY) LIMIT 1");
+                                    $tc_stmt = $ots_db->prepare("SELECT AMOUNT, CONCAT(YEAR, '-', LPAD(MONTH, 2, '0'), '-', LPAD(DAY, 2, '0')) AS ots_date, CASH_DOCUMENT_NUMBER AS ots_doc FROM transfers_to_conference WHERE CHURCH_ID = ? AND VIA_BANK = 1 AND AMOUNT = ABS(?) AND CONCAT(YEAR, '-', LPAD(MONTH, 2, '0'), '-', LPAD(DAY, 2, '0')) BETWEEN DATE_SUB(?, INTERVAL 45 DAY) AND DATE_ADD(?, INTERVAL 45 DAY) LIMIT 1");
                                     if ($tc_stmt) {
                                         $tc_stmt->bind_param("idss", $church_id, $bank_amount, $bank_date, $bank_date);
                                         $tc_stmt->execute();
@@ -668,8 +680,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 $inserted_rows++;
 
                                 // Automatikus párosítás
-                                $ots_query = "SELECT MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETIME) AS ots_date, RECORD_ID FROM ots.TRANSACTIONS WHERE CHURCH_ID = ? AND DATETIME BETWEEN DATE_SUB(?, INTERVAL 5 DAY) AND DATE_ADD(?, INTERVAL 5 DAY) AND VIA_BANK <> 0 GROUP BY RECORD_ID HAVING SUM(IF(TYPE IN ($exp_types_str), -1 * AMOUNT, AMOUNT)) = ?";
-                                $stmt_ots = $conn->prepare($ots_query);
+                                $ots_query = "SELECT MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETIME) AS ots_date, RECORD_ID FROM TRANSACTIONS WHERE CHURCH_ID = ? AND DATETIME BETWEEN DATE_SUB(?, INTERVAL 5 DAY) AND DATE_ADD(?, INTERVAL 5 DAY) AND VIA_BANK <> 0 GROUP BY RECORD_ID HAVING SUM(IF(TYPE IN ($exp_types_str), -1 * AMOUNT, AMOUNT)) = ?";
+                                $stmt_ots = $ots_db->prepare($ots_query);
                                 if ($stmt_ots) {
                                     $stmt_ots->bind_param("issd", $church_id, $bank_date, $bank_date, $bank_amount);
                                     $stmt_ots->execute();
@@ -731,7 +743,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     // only admin allowed for multi-upload
     if (!is_admin()) { echo json_encode(['status'=>'ERROR','message'=>'Only admin allowed']); exit; }
     header('Content-Type: application/json');
-    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token'])) {
         echo json_encode(['status' => 'ERROR', 'message' => 'CSRF mismatch']);
         exit;
     }
@@ -924,7 +936,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     session_write_close();
     header('Content-Type: application/json');
     try {
-        if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+        if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token'])) {
             echo json_encode(['status' => 'ERROR', 'message' => 'CSRF mismatch']);
             exit;
         }
@@ -960,9 +972,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $rec_res = false;
                 }
                 while ($rec = $rec_res->fetch_assoc()) {
-                $used_sub = "(SELECT ots_record_id FROM bank_reconciliation WHERE ots_record_id IS NOT NULL UNION SELECT record_id FROM bank_reconciliation_items)";
-                $ots_query = "SELECT MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETIME) AS ots_date, RECORD_ID FROM ots.TRANSACTIONS WHERE CHURCH_ID = ? AND DATETIME BETWEEN DATE_SUB(?, INTERVAL ? DAY) AND DATE_ADD(?, INTERVAL ? DAY) AND VIA_BANK <> 0 AND RECORD_ID NOT IN $used_sub GROUP BY RECORD_ID HAVING SUM(IF(TYPE IN ($exp_types_str), -1 * AMOUNT, AMOUNT)) = ?";
-                $stmt = $conn->prepare($ots_query);
+                $used_ots_ids = [];
+                $used_res = $conn->query("SELECT ots_record_id FROM bank_reconciliation WHERE ots_record_id IS NOT NULL UNION SELECT record_id FROM bank_reconciliation_items");
+                if ($used_res) { while ($u = $used_res->fetch_assoc()) { $used_ots_ids[] = (int)($u['ots_record_id'] ?? $u['record_id']); } }
+                $used_list = empty($used_ots_ids) ? '0' : implode(',', $used_ots_ids);
+                $ots_query = "SELECT MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETIME) AS ots_date, RECORD_ID FROM TRANSACTIONS WHERE CHURCH_ID = ? AND DATETIME BETWEEN DATE_SUB(?, INTERVAL ? DAY) AND DATE_ADD(?, INTERVAL ? DAY) AND VIA_BANK <> 0 AND RECORD_ID NOT IN ($used_list) GROUP BY RECORD_ID HAVING SUM(IF(TYPE IN ($exp_types_str), -1 * AMOUNT, AMOUNT)) = ?";
+                $stmt = $ots_db->prepare($ots_query);
                 if ($stmt) {
                     $stmt->bind_param("isisid", $cid, $rec['bank_date'], $days, $rec['bank_date'], $days, $rec['bank_amount']);
                     $stmt->execute();
@@ -1040,8 +1055,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             while ($rec = $rec_res->fetch_assoc()) {
                 $bd = mb_strtolower(trim($rec['bank_desc'] ?? ''), 'UTF-8');
                 if (empty($bd)) continue;
-                $used_sub = "(SELECT ots_record_id FROM bank_reconciliation WHERE ots_record_id IS NOT NULL UNION SELECT record_id FROM bank_reconciliation_items)";
-                $os = $conn->prepare("SELECT t.RECORD_ID, MAX(t.DATETIME) AS ots_date, MAX(t.CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(COALESCE(notn.NAME, '')) AS ots_reason FROM ots.TRANSACTIONS t LEFT JOIN ots.names_of_transaction notn ON t.NAME_ID = notn.id WHERE t.CHURCH_ID = ? AND t.VIA_BANK <> 0 AND t.DATETIME BETWEEN DATE_SUB(?, INTERVAL 90 DAY) AND DATE_ADD(?, INTERVAL 90 DAY) AND t.RECORD_ID NOT IN $used_sub GROUP BY t.RECORD_ID HAVING SUM(IF(t.TYPE IN ($exp_types_str), -1 * t.AMOUNT, t.AMOUNT)) = ?");
+                $used_ots_ids = [];
+                $used_res = $conn->query("SELECT ots_record_id FROM bank_reconciliation WHERE ots_record_id IS NOT NULL UNION SELECT record_id FROM bank_reconciliation_items");
+                if ($used_res) { while ($u = $used_res->fetch_assoc()) { $used_ots_ids[] = (int)($u['ots_record_id'] ?? $u['record_id']); } }
+                $used_list = empty($used_ots_ids) ? '0' : implode(',', $used_ots_ids);
+                $os = $ots_db->prepare("SELECT t.RECORD_ID, MAX(t.DATETIME) AS ots_date, MAX(t.CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(COALESCE(notn.NAME, '')) AS ots_reason FROM TRANSACTIONS t LEFT JOIN NAMES_OF_TRANSACTION notn ON t.NAME_ID = notn.id WHERE t.CHURCH_ID = ? AND t.VIA_BANK <> 0 AND t.DATETIME BETWEEN DATE_SUB(?, INTERVAL 90 DAY) AND DATE_ADD(?, INTERVAL 90 DAY) AND t.RECORD_ID NOT IN ($used_list) GROUP BY t.RECORD_ID HAVING SUM(IF(t.TYPE IN ($exp_types_str), -1 * t.AMOUNT, t.AMOUNT)) = ?");
                 if (!$os) continue;
                 $os->bind_param("issd", $cid, $rec['bank_date'], $rec['bank_date'], $rec['bank_amount']);
                 $os->execute();

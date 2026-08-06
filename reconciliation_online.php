@@ -1023,13 +1023,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             if (!empty($record_ids)) {
                 $id_list = implode(',', array_fill(0, count($record_ids), '?'));
                 $adjusted_amount_sql = "IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)";
-                $base_joins = "FROM TRANSACTIONS T
-                         LEFT JOIN PERSONS p ON T.PERSON_ID = p.id
-                         LEFT JOIN NAMES_OF_TRANSACTION nt1 ON T.NAME_ID = nt1.id
-                         LEFT JOIN NAMES_OF_TRANSACTION nt2 ON T.NAME2_ID = nt2.id
-                         LEFT JOIN TRANSACTION_TYPE tt ON T.TYPE = tt.id
-                         LEFT JOIN USERS u ON T.EDITED_BY = u.id
-                         LEFT JOIN FUNDS funds ON T.FUND_ID = funds.id";
+$base_joins = "FROM TRANSACTIONS T
+                 LEFT JOIN PERSONS p ON T.PERSON_ID = p.id
+                 LEFT JOIN NAMES_OF_TRANSACTION nt1 ON T.NAME_ID = nt1.id
+                 LEFT JOIN NAMES_OF_TRANSACTION nt2 ON T.NAME2_ID = nt2.id
+                 LEFT JOIN TRANSACTION_TYPE tt ON T.TYPE = tt.id
+                 LEFT JOIN USERS u ON T.EDITED_BY = u.id
+                 LEFT JOIN FUNDS funds ON T.FUND_ID = funds.id";
                 $sql_ex = "SELECT T.*,
                        $adjusted_amount_sql AS adjusted_amount,
                        TRIM(CONCAT(
@@ -1042,7 +1042,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                  $base_joins
                   WHERE T.RECORD_ID IN ($id_list)
                   ORDER BY T.DATETIME ASC";
-                $stmt_ex = $ots_db->prepare($sql_ex);
+                $stmt_ex = $conn->prepare($sql_ex);
                 $result_ex = false;
                 if ($stmt_ex) {
                     $types = str_repeat('i', count($record_ids));
@@ -1090,25 +1090,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         $start_date = !empty($bank_date) ? date('Y-m-d', strtotime($is_fee ? $bank_date : "$bank_date -70 days")) : '1970-01-01';
         $end_date = !empty($bank_date) ? date('Y-m-d', strtotime("$bank_date +70 days")) : date('Y-m-d', strtotime('+70 days'));
 
-        // Felhasznált OTS rekordok lekérése a revizor adatbázisból
-        $used_record_ids = [];
-        $stmt_used = $conn->prepare("SELECT ots_record_id AS rid FROM bank_reconciliation WHERE ots_record_id IS NOT NULL AND church_id = ? UNION SELECT record_id AS rid FROM bank_reconciliation_items");
-        if ($stmt_used) {
-            $stmt_used->bind_param('i', $church_id);
-            $stmt_used->execute();
-            $used_res = $stmt_used->get_result();
-            while ($u = $used_res->fetch_assoc()) {
-                $used_record_ids[] = intval($u['rid']);
-            }
-        }
-
-        $not_in_clause = '';
-        $not_in_params = [];
-        if (!empty($used_record_ids)) {
-            $not_in_clause = 'AND T.RECORD_ID NOT IN (' . implode(',', array_fill(0, count($used_record_ids), '?')) . ')';
-            $not_in_params = $used_record_ids;
-        }
-
         $sql = "SELECT T.*,
                        $adjusted_amount_sql AS adjusted_amount,
                        TRIM(CONCAT(
@@ -1125,21 +1106,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                   WHERE T.CHURCH_ID = ?
                     AND T.DATETIME BETWEEN ? AND ?
                     AND T.DATETIME >= DATE_SUB(?, INTERVAL 45 DAY)
-                    $not_in_clause
+                    AND T.RECORD_ID NOT IN (
+                       SELECT ots_record_id FROM bank_reconciliation WHERE ots_record_id IS NOT NULL AND church_id = ?
+                       UNION
+                       SELECT record_id FROM bank_reconciliation_items
+                   )
                  GROUP BY T.RECORD_ID
                  HAVING adjusted_amount $sign 0
                  ORDER BY ABS(DATEDIFF(T.DATETIME, ?)) ASC, T.DATETIME ASC";
-        $stmt = $ots_db->prepare($sql);
+        $stmt = $conn->prepare($sql);
         if ($stmt) {
-            $bind_types = 'isss';
-            $bind_params = [$church_id, $start_date, $end_date, $bank_date];
-            if (!empty($not_in_params)) {
-                $bind_types .= str_repeat('i', count($not_in_params));
-                $bind_params = array_merge($bind_params, $not_in_params);
-            }
-            $bind_types .= 's';
-            $bind_params[] = $bank_date;
-            $stmt->bind_param($bind_types, ...$bind_params);
+            $stmt->bind_param('isssis', $church_id, $start_date, $end_date, $bank_date, $church_id, $bank_date);
             $stmt->execute();
             $result = $stmt->get_result();
         }
@@ -1187,7 +1164,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                  $base_joins
                  WHERE T.RECORD_ID IN ($record_ids_sql)
                  $order_sql";
-        $stmt = $ots_db->prepare($sql);
+        $stmt = $conn->prepare($sql);
         if ($stmt) {
             $record_params = [$church_id];
             $record_types = 'i';
@@ -1367,7 +1344,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                ORDER BY T.DATETIME DESC
                LIMIT 100";
 
-    $stmt = $ots_db->prepare($sql);
+    $stmt = $conn->prepare($sql);
     if ($stmt) {
         $bind_types = 'iiss' . $like_types;
         $bind_values = array_merge([$church_id, $church_id, $start_date, $end_date], $like_params);

@@ -27,6 +27,7 @@ if ($just_logged_in) {
     try {
         require_once __DIR__ . '/../ots/session_handler.php';
         require_once __DIR__ . '/lib/bootstrap.php';
+        require_once __DIR__ . '/lib/activity_log.php';
         require_once __DIR__ . '/lib/auth.php';
         // populate accessible churches from OTS ROLES
         build_user_context_from_ots();
@@ -41,26 +42,15 @@ if ($just_logged_in) {
         // if user has exactly one accessible church, set selected
         $acs = get_accessible_church_ids();
         if (is_array($acs) && count($acs) === 1) {
-            $_SESSION['revizor_selected_church'] = $acs[0];
-            // also save the name
-            try {
-                $ots = get_ots_conn();
-                $sn = $ots->prepare("SELECT name FROM ots.churches WHERE id = ?");
-                if ($sn) {
-                    $sn->bind_param('i', $acs[0]);
-                    $sn->execute();
-                    $snr = $sn->get_result();
-                    if ($snr && ($snr = $snr->fetch_assoc())) {
-                        $_SESSION['revizor_selected_church_name'] = $snr['name'];
-                    }
-                }
-            } catch (Throwable $e) {}
+            set_selected_church_session($acs[0]);
         } elseif (is_array($acs) && count($acs) > 1) {
             // multiple churches — redirect to selection page
             session_regenerate_id(true);
             header('Location: select-church.php?redirect=index.php');
             exit;
         }
+        $role = $_SESSION['revizor_app_role'] ?? 'unknown';
+        log_activity('login', ['role' => $role, 'churches' => is_array($acs) ? count($acs) : 0]);
         session_regenerate_id(true);
     } catch (Throwable $e) {
         // ignore, fall back to default redirect

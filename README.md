@@ -27,7 +27,11 @@ Bankegyeztető és bizonylat-ellenőrző rendszer adventista egyházi gyülekeze
 2. Töltsd fel a fájlokat a webszerver `public_html` (vagy `www`, `htdocs`) könyvtárába
 3. Győződj meg róla, hogy a `_storage/documents` könyvtár írható a web user számára
 
-### Adatbázis létrehozása
+### Revizor adatbázis létrehozása
+
+A Revizor Asszisztens saját adatbázisban tárolja a banki tételeket, egyeztetéseket, naplózást. Ezt az adatbázist a webszerveren kell létrehozni.
+
+#### SQL-paranccsal (phpMyAdmin vagy parancssor):
 
 ```sql
 CREATE DATABASE revizor_db CHARACTER SET utf8mb4 COLLATE utf8mb4_hungarian_ci;
@@ -36,7 +40,30 @@ GRANT ALL PRIVILEGES ON revizor_db.* TO 'revizor_rw'@'localhost';
 FLUSH PRIVILEGES;
 ```
 
-Az adatbázis táblák automatikusan létrejönnek az első használatkor (vagy futtasd a `database/migration_002_audit_docs.sql` fájlt).
+#### cPanel-ben:
+
+1. **MySQL Databases** menüpont
+2. Görgess a **Create New Database** szakaszhoz, írd be a `revizor_db` nevet, majd kattints a **Create Database** gombra
+3. Görgess a **Create New User** szakaszhoz
+4. Add meg a felhasználónevet (pl. `revizor_rw`) és egy erős jelszót, majd kattints a **Create User** gombra
+5. Görgess a **Add User To Database** szakaszhoz
+6. Válaszd ki az imént létrehozott felhasználót és az adatbázist (pl. `tetkuhu1_revizor_db`), majd kattints az **Add** gombra
+7. A megjelenő jogosultság listában **ALL PRIVILEGES**-t jelöld be (az összeset), majd kattints a **Make Changes** gombra
+
+#### phpMyAdmin-ban (ha elérhető):
+
+1. Nyisd meg a phpMyAdmin-t
+2. Kattints a **New** (Új) gombra a bal oldali panelfülön
+3. Add meg az adatbázis nevét: `revizor_db`, válaszd a `utf8mb4_hungarian_ci` karakterkódolást, majd kattints a **Create** gombra
+4. Menj a **Felhasználók** fülre, kattints az **Add user** gombra
+5. Add meg a felhasználónevet (pl. `revizor_rw`), jelszót
+6. **Globális jogosultságoknál** ne pipálj be semmit, görgess le a **Database-specific privileges** részhez
+7. Válaszd ki a `revizor_db`-t a listából, majd pipáld be az **ALL PRIVILEGES**-t (Check all)
+8. Kattints az **Elküld** gombra
+
+#### Táblák létrehozása:
+
+Az adatbázis táblák **automatikusan létrejönnek** az első használatkor (a PHP fájlok `CREATE TABLE IF NOT EXISTS` utasításokkal hozzák létre őket). Alternatívaként futtathatod a `database/migration_002_audit_docs.sql` fájlt is.
 
 ### OTS adatbázis – csak olvasási user létrehozása (cPanel)
 

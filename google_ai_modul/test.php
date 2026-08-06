@@ -1,7 +1,13 @@
 <?php
 // Google AI Modul — Diagnosztikai oldal
-error_reporting(E_ALL);
-ini_set('display_errors', 1);
+error_reporting(0);
+ini_set('display_errors', 0);
+
+session_start();
+if (empty($_SESSION['selected_church_id'])) {
+    echo "<h2>Hozzáférés megtagadva</h2><p>Jelentkezz be a Google AI Modulba.</p>";
+    exit;
+}
 
 echo "<h2>Google AI Modul — Diagnosztika</h2>";
 

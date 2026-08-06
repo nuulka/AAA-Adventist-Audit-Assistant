@@ -21,9 +21,11 @@ require_once __DIR__ . '/lib/bootstrap.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/session.php';
 build_user_context_from_ots();
+require_selected_church('index.php');
 
 $session_remaining = ensure_revizor_session_timeout();
 ensure_revizor_csrf_token();
+log_activity('page_view', ['page' => 'index']);
 ?>
 <!DOCTYPE html>
 <html lang="hu">
@@ -91,6 +93,20 @@ ensure_revizor_csrf_token();
                         </div>
                     </div>
                     <p class="text-muted small mb-0">Banki CSV fájlok feltöltése, automatikus párosítás OTS tételekkel.</p>
+                </div>
+            </a>
+        </div>
+        <div class="col-md-4">
+            <a href="activity_log.php" class="card-link">
+                <div class="card p-4 h-100">
+                    <div class="d-flex align-items-center gap-3 mb-3">
+                        <div class="icon-circle bg-danger bg-opacity-10 text-danger">📋</div>
+                        <div>
+                            <h5 class="mb-0">Használati Napló</h5>
+                            <small class="text-muted">Admin naplózás</small>
+                        </div>
+                    </div>
+                    <p class="text-muted small mb-0">Felhasználói tevékenységek naplózása: be-/kijelentkezés, oldalmegtekintések, módosítások.</p>
                 </div>
             </a>
         </div>

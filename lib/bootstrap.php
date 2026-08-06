@@ -1,6 +1,24 @@
 <?php
 // Common bootstrap for Revizor
 // Lightweight: start session if needed, provide helper DB connections
+
+// PHP 7.x polyfills for PHP 8.0+ string functions
+if (!function_exists('str_starts_with')) {
+    function str_starts_with(string $haystack, string $needle): bool {
+        return substr($haystack, 0, strlen($needle)) === $needle;
+    }
+}
+if (!function_exists('str_ends_with')) {
+    function str_ends_with(string $haystack, string $needle): bool {
+        return $needle !== '' && substr($haystack, -strlen($needle)) === $needle;
+    }
+}
+if (!function_exists('str_contains')) {
+    function str_contains(string $haystack, string $needle): bool {
+        return strpos($haystack, $needle) !== false;
+    }
+}
+
 if (session_status() != PHP_SESSION_ACTIVE) {
     session_start();
 }

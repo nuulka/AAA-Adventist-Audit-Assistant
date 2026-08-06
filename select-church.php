@@ -40,25 +40,16 @@ function safe_redirect(string $url): string {
     return in_array($path, $allowed, true) ? $url : 'index.php';
 }
 
-// Ha már van kiválasztva gyülekezet, és itt a change param, töröljük
-if (isset($_GET['change']) && isset($_SESSION['revizor_selected_church'])) {
-    unset($_SESSION['revizor_selected_church'], $_SESSION['revizor_selected_church_name']);
-}
-
 // Mentés
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['church_id'])) {
+    if (empty($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token'])) {
+        http_response_code(400);
+        echo 'CSRF token mismatch';
+        exit;
+    }
     $cid = intval($_POST['church_id']);
-    if ($cid > 0 && (is_admin() || (is_array($accessible) && in_array($cid, $accessible)))) {
-        $stmt = $ots->prepare("SELECT name FROM ots.churches WHERE id = ?");
-        if ($stmt) {
-            $stmt->bind_param('i', $cid);
-            $stmt->execute();
-            $res = $stmt->get_result();
-            if ($row = $res->fetch_assoc()) {
-                $_SESSION['revizor_selected_church'] = $cid;
-                $_SESSION['revizor_selected_church_name'] = $row['name'];
-            }
-        }
+    if ($cid > 0 && (is_admin() || (is_array($accessible) && in_array($cid, $accessible, true)))) {
+        set_selected_church_session($cid);
     }
     $redirect = isset($_POST['redirect']) ? safe_redirect($_POST['redirect']) : 'index.php';
     header("Location: $redirect");
@@ -67,30 +58,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['church_id'])) {
 
 // Gyülekezet lista lekérése
 $churches = [];
-if (is_admin()) {
-    $all = $ots->query("SELECT id, name FROM ots.churches WHERE name IS NOT NULL AND name != '' ORDER BY name ASC");
-    if ($all) {
-        while ($r = $all->fetch_assoc()) {
-            $churches[] = $r;
-        }
+$churches_by_id = [];
+$table_candidates = ['CHURCHES', 'churches'];
+
+// 1. Konfigból (app.local.php) próbáljuk
+$cfg = load_app_config();
+if (!empty($cfg['churches']) && is_array($cfg['churches'])) {
+    $churches_by_id = $cfg['churches'];
+    foreach ($churches_by_id as $id => $name) {
+        $churches[] = ['id' => $id, 'name' => $name];
     }
-} elseif (is_array($accessible) && !empty($accessible)) {
-    $placeholders = implode(',', array_fill(0, count($accessible), '?'));
-    $types = str_repeat('i', count($accessible));
-    $stmt = $ots->prepare("SELECT id, name FROM ots.churches WHERE id IN ($placeholders) AND name IS NOT NULL AND name != '' ORDER BY name ASC");
-    if ($stmt) {
-        $stmt->bind_param($types, ...$accessible);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        while ($r = $res->fetch_assoc()) {
-            $churches[] = $r;
+}
+
+// 2. Ha konfig üres, próbáljuk OTS-ből
+if (empty($churches)) {
+    if (is_admin()) {
+        // Admin: minden gyülekezet lekérése (táblanév kis/nagybetű próbálgatással)
+        foreach ($table_candidates as $tbl) {
+            $all = $ots->query("SELECT id, name FROM $tbl WHERE name IS NOT NULL AND name != '' ORDER BY name ASC");
+            if ($all && $all->num_rows > 0) {
+                while ($r = $all->fetch_assoc()) {
+                    $churches[] = $r;
+                    $churches_by_id[$r['id']] = $r['name'];
+                }
+                break;
+            }
+        }
+    } elseif (is_array($accessible) && count($accessible) > 0) {
+        // Nem admin: csak a hozzárendelt gyülekezetek
+        $placeholders = implode(',', array_fill(0, count($accessible), '?'));
+        $types = str_repeat('i', count($accessible));
+        foreach ($table_candidates as $tbl) {
+            $stmt = $ots->prepare("SELECT id, name FROM $tbl WHERE id IN ($placeholders) AND name IS NOT NULL AND name != '' ORDER BY name ASC");
+            if ($stmt) {
+                $stmt->bind_param($types, ...$accessible);
+                $stmt->execute();
+                $res = $stmt->get_result();
+                while ($r = $res->fetch_assoc()) {
+                    $churches[] = $r;
+                    $churches_by_id[$r['id']] = $r['name'];
+                }
+                if (!empty($churches)) break;
+            }
         }
     }
 }
 
-// Ha nincs elérhető gyülekezet, irány a főoldal
+// Ha nincs lekérhető gyülekezet, hibaüzenet — ne irányítsunk vissza index.php-ba (végtelen loop)
 if (empty($churches)) {
-    header('Location: index.php');
+    $err_msg = 'Nem sikerült betölteni a gyülekezeti listát. Az OTS adatbázis kapcsolat nem elérhető, vagy a felhasználónak nincs hozzárendelve gyülekezet.';
+    if (!empty($accessible) && is_array($accessible)) {
+        $err_msg .= ' (OTS user_id: ' . intval($_SESSION[GN_USER_ID] ?? 0) . ', elérhető ID-k: ' . implode(',', $accessible) . ')';
+    }
+    $err_msg .= ' | MySQL error: ' . ($ots->error ?? 'n/a') . ' | próbált táblák: ' . implode(', ', $table_candidates);
+    ?><!DOCTYPE html><html lang="hu"><head><meta charset="UTF-8"><title>Hiba – Revizor</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head><body><div class="container mt-5"><div class="alert alert-danger"><h5>⚠️ Hiba</h5><p><?= htmlspecialchars($err_msg) ?></p><a href="logout.php" class="btn btn-outline-secondary">Kijelentkezés</a></div></div></body></html><?php
     exit;
 }
 
@@ -119,6 +140,7 @@ $redirect_to = isset($_GET['redirect']) ? safe_redirect($_GET['redirect']) : 'in
             <p class="text-muted small mb-0">Melyik gyülekezettel szeretnél dolgozni? <kbd class="bg-light text-dark border px-1" style="font-size:11px;border-radius:3px;">Betű</kbd> billentyűvel ugrás</p>
         </div>
         <form method="POST" id="churchForm">
+            <input type="hidden" name="csrf_token" value="<?php echo htmlspecialchars($_SESSION['csrf_token'], ENT_QUOTES, 'UTF-8'); ?>">
             <input type="hidden" name="redirect" value="<?php echo htmlspecialchars($redirect_to); ?>">
             <div class="d-flex flex-column gap-2 mb-2" id="churchList">
                 <?php foreach ($churches as $c): ?>
@@ -130,9 +152,6 @@ $redirect_to = isset($_GET['redirect']) ? safe_redirect($_GET['redirect']) : 'in
                 <?php endforeach; ?>
             </div>
         </form>
-        <div class="text-center mt-2">
-            <a href="<?php echo htmlspecialchars($redirect_to); ?>" class="btn btn-outline-secondary btn-sm">Később</a>
-        </div>
     </div>
     <script>
     var lastKeyTime = 0;

@@ -39,3 +39,6 @@ function refresh_revizor_session_timeout() {
     $_SESSION[GN_LAST_ACTIVE] = time();
     return $_SESSION['revizor_expires_at'] - time();
 }
+
+// Activity log helper — always available
+require_once __DIR__ . '/activity_log.php';

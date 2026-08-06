@@ -12,14 +12,8 @@ $response = ["status" => "error", "message" => "Ismeretlen hiba."];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['csv_file'])) {
     try {
-        $uploadDir = __DIR__ . '/uploads/';
-        if (!is_dir($uploadDir)) {
-            mkdir($uploadDir, 0777, true);
-        }
-        $filePath = $uploadDir . basename($_FILES['csv_file']['name']);
-
-        if (move_uploaded_file($_FILES['csv_file']['tmp_name'], $filePath)) {
-            $pdo = get_pdo_connection();
+        $filePath = $_FILES['csv_file']['tmp_name'];
+        $pdo = get_pdo_connection();
 
             // Betöltjük a kihagyandó (területi) bankszámlák listáját
             $skipAccounts = [];
@@ -82,9 +76,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['csv_file'])) {
             } else {
                 $response = ["status" => "error", "message" => "Sérült CSV fájl vagy nem megfelelő formátum."];
             }
-        } else {
-            $response = ["status" => "error", "message" => "Fájl feltöltési hiba (uploads/ könyvtár nem írható)."];
-        }
     } catch (Exception $e) {
         $response = ["status" => "error", "message" => "PHP hiba: " . $e->getMessage()];
     }

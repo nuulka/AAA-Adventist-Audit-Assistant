@@ -7,6 +7,11 @@ require_once __DIR__ . '/../ots/constant.php';
 if (session_status() != PHP_SESSION_ACTIVE) {
     session_start();
 }
+
+require_once __DIR__ . '/lib/bootstrap.php';
+require_once __DIR__ . '/lib/activity_log.php';
+log_activity('logout');
+
 $_SESSION = [];
 
 if (ini_get('session.use_cookies')) {

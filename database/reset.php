@@ -66,7 +66,7 @@ if (php_sapi_name() === 'cli') {
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token'])) {
         http_response_code(400);
         echo 'CSRF token mismatch';
         exit;

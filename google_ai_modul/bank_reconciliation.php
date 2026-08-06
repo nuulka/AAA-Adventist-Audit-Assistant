@@ -44,12 +44,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             } catch (Exception $e) {}
 
-            $uploadDir = __DIR__ . '/uploads/';
-            if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
-            $filePath = $uploadDir . basename($_FILES['csv_file']['name']);
-            if (move_uploaded_file($_FILES['csv_file']['tmp_name'], $filePath)) {
-                $parser = new CsvParserService($pdo);
-                $total = $parser->importCsv($filePath);
+            $filePath = $_FILES['csv_file']['tmp_name'];
+            $parser = new CsvParserService($pdo);
+            $total = $parser->importCsv($filePath);
                 if ($total > 0) {
                     // Területi számlák tételeinek törlése
                     if (!empty($skipAccounts)) {
@@ -77,10 +74,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $message = 'A CSV feldolgozása nem hozott új rekordokat.';
                     $messageType = 'warning';
                 }
-            } else {
-                $message = 'Fájl feltöltési hiba (uploads/ könyvtár nem írható).';
-                $messageType = 'error';
-            }
         } catch (Exception $e) {
             $message = 'PHP hiba: ' . $e->getMessage();
             $messageType = 'error';

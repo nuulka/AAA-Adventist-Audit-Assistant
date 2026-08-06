@@ -25,6 +25,8 @@ $accessible_church_ids = get_accessible_church_ids();
 
 $session_remaining = ensure_revizor_session_timeout();
 
+log_activity('page_view', ['page' => 'search']);
+
 $conn = get_revizor_conn();
 $ots_db = get_ots_conn();
 
@@ -35,7 +37,7 @@ if (defined('GN_TRANSACTION_TYPE_PAYMENT')) $exp_types[] = GN_TRANSACTION_TYPE_P
 if (defined('GN_TRANSACTION_TYPE_SPECIAL_TARGET_VIA_CONFERENCE')) $exp_types[] = GN_TRANSACTION_TYPE_SPECIAL_TARGET_VIA_CONFERENCE;
 if (defined('GN_TRANSACTION_TYPE_ACCEPTED_SUBTRACTION')) $exp_types[] = GN_TRANSACTION_TYPE_ACCEPTED_SUBTRACTION;
 if (empty($exp_types)) {
-    $tt_res = $conn->query("SELECT id, NAME FROM ots.TRANSACTION_TYPE");
+    $tt_res = $ots_db->query("SELECT id, NAME FROM TRANSACTION_TYPE");
     if ($tt_res) {
         while ($tt = $tt_res->fetch_assoc()) {
             $name = mb_strtolower($tt['NAME'], 'UTF-8');
@@ -52,10 +54,24 @@ if (empty($exp_types_str)) { $exp_types_str = '-1'; }
 // Church list - for admin dropdown
 $churches = [];
 if (is_admin()) {
-    $ch_res = $conn->query("SELECT id, name FROM ots.churches WHERE name IS NOT NULL AND name != '' ORDER BY name ASC");
-    if ($ch_res) {
+    $ch_res = $ots_db->query("SELECT id, name FROM CHURCHES WHERE name IS NOT NULL AND name != '' ORDER BY name ASC");
+    if ($ch_res && $ch_res->num_rows > 0) {
         while ($ch = $ch_res->fetch_assoc()) { $churches[] = $ch; }
+    } else {
+        // Fallback: konfigból
+        $cfg = load_app_config();
+        if (!empty($cfg['churches']) && is_array($cfg['churches'])) {
+            foreach ($cfg['churches'] as $id => $name) {
+                $churches[] = ['id' => $id, 'name' => $name];
+            }
+        }
     }
+}
+
+// Church name map a már betöltött listából
+$search_church_names = [];
+foreach ($churches as $sc) {
+    $search_church_names[$sc['id']] = $sc['name'];
 }
 
 // Search params
@@ -64,12 +80,10 @@ $source_whitelist = ['bank', 'ots', 'both'];
 if (!in_array($source, $source_whitelist, true)) {
     $source = 'bank';
 }
-if (isset($_GET['church_id'])) {
-    $church_id = intval($_GET['church_id']);
-} elseif (!is_admin() && isset($_SESSION['revizor_selected_church']) && $_SESSION['revizor_selected_church'] > 0) {
-    $church_id = intval($_SESSION['revizor_selected_church']);
+if (is_admin()) {
+    $church_id = isset($_GET['church_id']) ? intval($_GET['church_id']) : 0;
 } else {
-    $church_id = 0;
+    $church_id = require_selected_church('search.php');
 }
 // if a church is requested, ensure the user has access
 if ($church_id > 0) {
@@ -91,8 +105,9 @@ $status_whitelist = ['all', 'matched', 'unmatched'];
 if (!in_array($status_filter, $status_whitelist, true)) {
     $status_filter = 'all';
 }
+$transfer_search = isset($_GET['transfer']) && $_GET['transfer'] === '1';
 $page = isset($_GET['page']) ? max(1, intval($_GET['page'])) : 1;
-$per_page = 50;
+$per_page = $transfer_search ? 99999 : 50;
 $offset = ($page - 1) * $per_page;
 $export = isset($_GET['export']) && $_GET['export'] === 'csv';
 $exact_word = isset($_GET['exact_word']) && $_GET['exact_word'] === '1';
@@ -110,7 +125,7 @@ function normalize_search_date($value) {
 
 $date_from = normalize_search_date($date_from_input);
 $date_to = normalize_search_date($date_to_input);
-$has_search = $church_id > 0 || $amount_min !== null || $amount_max !== null || $date_from !== '' || $date_to !== '' || $description !== '' || $doc_number !== '';
+$has_search = $church_id > 0 || $amount_min !== null || $amount_max !== null || $date_from !== '' || $date_to !== '' || $description !== '' || $doc_number !== '' || $transfer_search;
 
 $results = [];
 $total = 0;
@@ -121,7 +136,7 @@ if ($has_search) {
 try {
     $start_time = microtime(true);
 
-    if ($source === 'bank' || $source === 'both') {
+    if (!$transfer_search && ($source === 'bank' || $source === 'both')) {
         $b_where = [];
         $b_params = [];
         $b_types = '';
@@ -199,9 +214,9 @@ try {
         }
 
         if (!$export) {
-            $b_sql = "SELECT br.*, c.name AS church_name FROM bank_reconciliation br $dedup_sub LEFT JOIN ots.churches c ON br.church_id = c.id $b_where_sql ORDER BY br.bank_date DESC LIMIT $per_page OFFSET $offset";
-        } else {
-            $b_sql = "SELECT br.*, c.name AS church_name FROM bank_reconciliation br $dedup_sub LEFT JOIN ots.churches c ON br.church_id = c.id $b_where_sql ORDER BY br.bank_date DESC";
+            $b_sql = "SELECT br.* FROM bank_reconciliation br $dedup_sub $b_where_sql ORDER BY br.bank_date DESC LIMIT $per_page OFFSET $offset";
+            } else {
+            $b_sql = "SELECT br.* FROM bank_reconciliation br $dedup_sub $b_where_sql ORDER BY br.bank_date DESC";
         }
         if (!empty($b_params)) {
             $stmt = $conn->prepare($b_sql);
@@ -213,15 +228,25 @@ try {
         } else {
             $b_res = $conn->query($b_sql);
         }
+        $paired_bank_ids = [];
+        $pb_res = $conn->query("SELECT DISTINCT reconciliation_id FROM bank_reconciliation_items");
+        if ($pb_res) {
+            while ($pb = $pb_res->fetch_assoc()) {
+                $paired_bank_ids[] = intval($pb['reconciliation_id']);
+            }
+        }
+        $paired_bank_map = array_flip($paired_bank_ids);
         if ($b_res) {
             while ($row = $b_res->fetch_assoc()) {
+                $row['church_name'] = $search_church_names[$row['church_id']] ?? null;
                 $row['_source'] = 'Bank';
+                $row['_is_paired'] = !empty($row['ots_record_id']) || isset($paired_bank_map[intval($row['id'])]);
                 $results[] = $row;
             }
         }
     }
 
-    if ($source === 'ots' || $source === 'both') {
+    if (!$transfer_search && ($source === 'ots' || $source === 'both')) {
         $adjusted_sql = "IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)";
 
         $o_where = ["T.CHURCH_ID > 0"];
@@ -305,14 +330,13 @@ try {
         $o_where_sql = implode(' AND ', $o_where);
         $o_having_sql = $o_having ? 'HAVING ' . implode(' AND ', $o_having) : '';
 
-        $base_joins = "FROM ots.TRANSACTIONS T
-                 LEFT JOIN ots.PERSONS p ON T.PERSON_ID = p.id
-                 LEFT JOIN ots.NAMES_OF_TRANSACTION nt1 ON T.NAME_ID = nt1.id
-                 LEFT JOIN ots.NAMES_OF_TRANSACTION nt2 ON T.NAME2_ID = nt2.id
-                 LEFT JOIN ots.TRANSACTION_TYPE tt ON T.TYPE = tt.id
-                 LEFT JOIN ots.USERS u ON T.EDITED_BY = u.id
-                 LEFT JOIN ots.funds f ON T.FUND_ID = f.id
-                 LEFT JOIN ots.churches c ON T.CHURCH_ID = c.id";
+        $base_joins = "FROM TRANSACTIONS T
+                 LEFT JOIN PERSONS p ON T.PERSON_ID = p.id
+                 LEFT JOIN NAMES_OF_TRANSACTION nt1 ON T.NAME_ID = nt1.id
+                 LEFT JOIN NAMES_OF_TRANSACTION nt2 ON T.NAME2_ID = nt2.id
+                 LEFT JOIN TRANSACTION_TYPE tt ON T.TYPE = tt.id
+                 LEFT JOIN USERS u ON T.EDITED_BY = u.id
+                 LEFT JOIN FUNDS f ON T.FUND_ID = f.id";
 
         // Count for OTS
         if ($source !== 'both') {
@@ -341,7 +365,7 @@ try {
                         TRIM(CONCAT(IFNULL(CONCAT_WS(' ', p.NAME_PREFIX, p.NAME, p.NAME_SUFFIX), ''),
                             ' ', IFNULL(nt1.NAME, ''), ' ', IFNULL(nt2.NAME, ''))) AS ots_desc_full,
                         tt.NAME AS ots_type_name, u.NAME AS ots_editor_name,
-                        f.NAME AS fund_name, c.name AS church_name,
+                        f.NAME AS fund_name, T.CHURCH_ID,
                         IF(T.VIA_BANK <> 0, 'Bank', 'Készpénz') AS flow_label,
                         T.VIA_BANK";
 
@@ -382,6 +406,7 @@ try {
                 $row['bank_desc'] = $row['ots_desc_full'];
                 $row['status'] = '';
                 $row['_is_paired'] = isset($paired_map[$row['RECORD_ID']]);
+                $row['church_name'] = $search_church_names[$row['CHURCH_ID']] ?? null;
                 $results[] = $row;
             }
         }
@@ -396,6 +421,143 @@ try {
         });
     }
 
+    // === Transfer search: find bank-cash pairs with matching absolute amount ===
+    if ($transfer_search) {
+        $tr_where = ["1=1"];
+        $tr_params = [];
+        $tr_types = '';
+        if ($church_id > 0) {
+            $tr_where[] = 'T.CHURCH_ID = ?';
+            $tr_params[] = $church_id;
+            $tr_types .= 'i';
+        } elseif (!is_admin()) {
+            if (empty($accessible_church_ids)) {
+                $tr_where[] = '1=0';
+            } else {
+                append_int_in_clause($tr_where, $tr_params, $tr_types, 'T.CHURCH_ID', $accessible_church_ids);
+            }
+        }
+        if ($date_from) {
+            $tr_where[] = 'T.DATETIME >= ?';
+            $tr_params[] = $date_from;
+            $tr_types .= 's';
+        }
+        if ($date_to) {
+            $tr_where[] = 'T.DATETIME <= ?';
+            $tr_params[] = $date_to . ' 23:59:59';
+            $tr_types .= 's';
+        }
+        // Amount filter applied at bucket level below
+
+        $tr_where_sql = implode(' AND ', $tr_where);
+        $adj_sql = "IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)";
+
+        // Find RECORD_ID groups that have both bank and cash transactions with matching ABS(adjusted_amount) and date
+        $tr_group_sql = "SELECT T.RECORD_ID, T.CHURCH_ID, T.VIA_BANK, $adj_sql AS adjusted_amount, DATE(T.DATETIME) AS tx_date
+                 FROM TRANSACTIONS T
+                 WHERE $tr_where_sql
+                 HAVING adjusted_amount <> 0";
+        $tr_group_stmt = $ots_db->prepare($tr_group_sql);
+        if ($tr_group_stmt) {
+            if (!empty($tr_params)) {
+                $tr_group_stmt->bind_param($tr_types, ...$tr_params);
+            }
+            $tr_group_stmt->execute();
+            $tr_group_res = $tr_group_stmt->get_result();
+        } else {
+            $tr_group_res = false;
+        }
+
+        // Group by (church_id, ABS(adjusted_amount), tx_date) and find pairs
+        $tr_buckets = [];
+        if ($tr_group_res) {
+            while ($tr = $tr_group_res->fetch_assoc()) {
+                $key = intval($tr['CHURCH_ID']) . '_' . abs(floatval($tr['adjusted_amount'])) . '_' . ($tr['tx_date'] ?? '');
+                if (!isset($tr_buckets[$key])) {
+                    $tr_buckets[$key] = ['bank_ids' => [], 'cash_ids' => [], 'abs_amount' => abs(floatval($tr['adjusted_amount'])), 'church_id' => intval($tr['CHURCH_ID']), 'tx_date' => $tr['tx_date']];
+                }
+                if ($tr['VIA_BANK'] != 0) {
+                    $tr_buckets[$key]['bank_ids'][] = intval($tr['RECORD_ID']);
+                } else {
+                    $tr_buckets[$key]['cash_ids'][] = intval($tr['RECORD_ID']);
+                }
+            }
+        }
+
+        // Filter to only buckets with both bank and cash, and apply amount filter
+        $matched_record_ids = [];
+        foreach ($tr_buckets as $bk => $bv) {
+            if (!empty($bv['bank_ids']) && !empty($bv['cash_ids'])) {
+                // Apply amount filter
+                if ($amount_min !== null && $bv['abs_amount'] < abs(floatval($amount_min))) continue;
+                if ($amount_max !== null && $bv['abs_amount'] > abs(floatval($amount_max))) continue;
+                foreach ($bv['bank_ids'] as $bid) { $matched_record_ids[] = $bid; }
+                foreach ($bv['cash_ids'] as $cid) { $matched_record_ids[] = $cid; }
+            }
+        }
+        $matched_record_ids = array_unique($matched_record_ids);
+
+        if (!empty($matched_record_ids)) {
+            $id_list = implode(',', $matched_record_ids);
+            $tr_detail_sql = "SELECT T.RECORD_ID, T.CHURCH_ID, T.VIA_BANK, $adj_sql AS adjusted_amount,
+                    T.DATETIME, T.CASH_DOCUMENT_NUMBER, T.DECISION_NUMBER,
+                    TRIM(CONCAT(
+                        IFNULL(CONCAT_WS(' ', p.NAME_PREFIX, p.NAME, p.NAME_SUFFIX), ''),
+                        ' ', IFNULL(nt1.NAME, ''), ' ', IFNULL(nt2.NAME, '')
+                    )) AS ots_desc_full,
+                    tt.NAME AS ots_type_name,
+                    u.NAME AS ots_editor_name,
+                    IF(T.VIA_BANK <> 0, 'Bank', 'Készpénz') AS flow_label
+             FROM TRANSACTIONS T
+             LEFT JOIN PERSONS p ON T.PERSON_ID = p.id
+             LEFT JOIN NAMES_OF_TRANSACTION nt1 ON T.NAME_ID = nt1.id
+             LEFT JOIN NAMES_OF_TRANSACTION nt2 ON T.NAME2_ID = nt2.id
+             LEFT JOIN TRANSACTION_TYPE tt ON T.TYPE = tt.id
+             LEFT JOIN USERS u ON T.EDITED_BY = u.id
+             WHERE T.RECORD_ID IN ($id_list)
+             ORDER BY T.DATETIME ASC, T.RECORD_ID ASC";
+            $tr_detail_res = $ots_db->query($tr_detail_sql);
+            if ($tr_detail_res) {
+                // Build lookup map for pair info
+                $pair_map = [];
+                foreach ($tr_buckets as $bv) {
+                    if (!empty($bv['bank_ids']) && !empty($bv['cash_ids'])) {
+                        foreach ($bv['bank_ids'] as $bid) { $pair_map[$bid] = $bv; }
+                        foreach ($bv['cash_ids'] as $cid) { $pair_map[$cid] = $bv; }
+                    }
+                }
+                while ($tr = $tr_detail_res->fetch_assoc()) {
+                    $tr['_source'] = 'OTS';
+                    $tr['bank_amount'] = $tr['adjusted_amount'];
+                    $tr['bank_date'] = $tr['DATETIME'] ? substr($tr['DATETIME'], 0, 10) : '';
+                    $tr['bank_desc'] = $tr['ots_desc_full'];
+                    $tr['status'] = '';
+                    $tr['_is_paired'] = false;
+                    $tr['church_name'] = $search_church_names[$tr['CHURCH_ID']] ?? null;
+                    // Add pair info
+                    $rid = intval($tr['RECORD_ID']);
+                    $tr['_transfer_abs_amount'] = $pair_map[$rid]['abs_amount'] ?? 0;
+                    $tr['_transfer_partner_ids'] = ($tr['VIA_BANK'] != 0)
+                        ? ($pair_map[$rid]['cash_ids'] ?? [])
+                        : ($pair_map[$rid]['bank_ids'] ?? []);
+                    $results[] = $tr;
+                }
+            }
+        }
+
+        // Sort transfer results by date, then pair
+        usort($results, function ($a, $b) {
+            $da = $a['bank_date'] ?? '';
+            $db = $b['bank_date'] ?? '';
+            if ($da !== $db) return strcmp($db ?: '', $da ?: '');
+            $aa = abs(floatval($a['adjusted_amount'] ?? 0));
+            $ab = abs(floatval($b['adjusted_amount'] ?? 0));
+            return $ab - $aa;
+        });
+
+        $total = count($results);
+    }
+
     $query_time = round((microtime(true) - $start_time) * 1000);
 } catch (Exception $e) {
     $error_msg = 'Lekérdezési hiba: ' . $e->getMessage();
@@ -404,7 +566,7 @@ try {
 }
 
 // === EXPORT CSV ===
-if ($export && $has_search) {
+if ($export && $has_search && !$transfer_search) {
     function export_csv_safe_cell($value) {
         $value = (string)$value;
         $value = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', ' ', $value);
@@ -537,8 +699,14 @@ $total_pages = $total > 0 ? ceil($total / $per_page) : 0;
                     🏛 <?php
                         $ch_name = '';
                         if ($church_id > 0) {
-                            $nstmt = $conn->prepare("SELECT name FROM ots.churches WHERE id = ?");
-                            if ($nstmt) { $nstmt->bind_param('i', $church_id); $nstmt->execute(); $nres = $nstmt->get_result(); if ($nres && $nr = $nres->fetch_assoc()) { $ch_name = $nr['name']; } }
+                            // Konfigból próbáljuk
+                            $cfg = load_app_config();
+                            if (!empty($cfg['churches'][$church_id])) {
+                                $ch_name = $cfg['churches'][$church_id];
+                            } else {
+                                $nstmt = $ots_db->prepare("SELECT name FROM CHURCHES WHERE id = ?");
+                                if ($nstmt) { $nstmt->bind_param('i', $church_id); $nstmt->execute(); $nres = $nstmt->get_result(); if ($nres && $nr = $nres->fetch_assoc()) { $ch_name = $nr['name']; } }
+                            }
                         }
                         echo htmlspecialchars($ch_name ?: '#' . $church_id);
                     ?>
@@ -591,6 +759,12 @@ $total_pages = $total > 0 ? ceil($total / $per_page) : 0;
                     <?php endforeach; ?>
                 </select>
             </div>
+            <div class="col-md-2 d-flex align-items-end pb-1">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" name="transfer" id="transfer_chk" value="1" <?= $transfer_search ? 'checked' : '' ?>>
+                    <label class="form-check-label small" for="transfer_chk" title="Keresés a banki és készpénzes párok között azonos abszolút összeg alapján">🔁 Átvezetés</label>
+                </div>
+            </div>
             <div class="col-md-12 mt-2">
                 <button type="submit" class="btn btn-primary btn-sm">🔎 Keresés</button>
                 <a href="search.php" class="btn btn-outline-secondary btn-sm">✕ Szűrők törlése</a>
@@ -604,13 +778,16 @@ $total_pages = $total > 0 ? ceil($total / $per_page) : 0;
 </div>
 
 <script>
-// Show/hide flow and status columns based on source
-document.querySelector('[name="source"]').addEventListener('change', function() {
-    var v = this.value;
-    document.getElementById('flow_col').style.display = (v === 'bank') ? 'none' : '';
-    document.getElementById('status_col').style.display = (v === 'ots') ? 'none' : '';
-});
-document.querySelector('[name="source"]').dispatchEvent(new Event('change'));
+function updateFilterVisibility() {
+    var src = document.querySelector('[name="source"]').value;
+    var tr = document.getElementById('transfer_chk').checked;
+    document.getElementById('flow_col').style.display = (src === 'bank' || tr) ? 'none' : '';
+    document.getElementById('status_col').style.display = (src === 'ots' || tr) ? 'none' : '';
+    document.querySelector('[name="source"]').closest('.col-md-2').style.display = tr ? 'none' : '';
+}
+document.querySelector('[name="source"]').addEventListener('change', updateFilterVisibility);
+document.getElementById('transfer_chk').addEventListener('change', updateFilterVisibility);
+updateFilterVisibility();
 document.getElementById('query_info').textContent = '<?= $has_search ? ($error_msg ? "Hiba" : "Lekérdezés ideje: {$query_time} ms") : "" ?>';
 </script>
 
@@ -636,14 +813,17 @@ document.getElementById('query_info').textContent = '<?= $has_search ? ($error_m
                         <th onclick="sortTableBy(this)" data-sort-type="date">Dátum</th>
                         <th onclick="sortTableBy(this)" data-sort-type="number" style="text-align:right;">Összeg</th>
                         <th onclick="sortTableBy(this)" data-sort-type="string">Közlemény / Leírás</th>
-                        <?php if ($source === 'bank' || $source === 'both'): ?>
+                        <?php if ($source === 'bank' || $source === 'both' || $transfer_search): ?>
                         <th onclick="sortTableBy(this)" data-sort-type="string">Státusz</th>
                         <th onclick="sortTableBy(this)" data-sort-type="string">OTS bizonylat</th>
                         <?php endif; ?>
-                        <?php if ($source === 'ots' || $source === 'both'): ?>
+                        <?php if ($source === 'ots' || $source === 'both' || $transfer_search): ?>
                         <th onclick="sortTableBy(this)" data-sort-type="string">Forgalom</th>
                         <th onclick="sortTableBy(this)" data-sort-type="string">Típus</th>
                         <th onclick="sortTableBy(this)" data-sort-type="string">Bizonylatszám</th>
+                        <?php endif; ?>
+                        <?php if ($transfer_search): ?>
+                        <th onclick="sortTableBy(this)" data-sort-type="string">Pár</th>
                         <?php endif; ?>
                     </tr>
                 </thead>
@@ -669,8 +849,8 @@ document.getElementById('query_info').textContent = '<?= $has_search ? ($error_m
                                     <span class="badge bg-light text-muted ms-1" title="Nincs párosítva">⚪</span>
                                 <?php endif; ?>
                             <?php elseif ($r['_source'] === 'Bank'): ?>
-                                <?php if (!empty($r['ots_record_id'])): ?>
-                                    <span class="badge bg-success ms-1" title="OTS #<?= intval($r['ots_record_id']) ?> párosítva">✅</span>
+                                <?php if ($r['_is_paired']): ?>
+                                    <span class="badge bg-success ms-1" title="<?= !empty($r['ots_record_id']) ? 'OTS #' . intval($r['ots_record_id']) . ' párosítva' : 'Párosítva (több tétel)' ?>">✅</span>
                                 <?php else: ?>
                                     <span class="badge bg-light text-muted ms-1" title="Nincs párosítva">⚪</span>
                                 <?php endif; ?>
@@ -682,7 +862,7 @@ document.getElementById('query_info').textContent = '<?= $has_search ? ($error_m
                         </td>
                         <td><?= htmlspecialchars(mb_substr($r['bank_desc'] ?? '-', 0, 120)) ?></td>
 
-                        <?php if ($source === 'bank' || $source === 'both'): ?>
+                        <?php if ($source === 'bank' || $source === 'both' || $transfer_search): ?>
                         <td>
                             <?php if ($r['_source'] === 'Bank'): ?>
                                 <?php
@@ -700,12 +880,16 @@ document.getElementById('query_info').textContent = '<?= $has_search ? ($error_m
                         </td>
                         <td>
                             <?php if ($r['_source'] === 'Bank'): ?>
-                                <?php if (!empty($r['ots_record_id'])): ?>
-                                    <a href="all_transactions/all_transactions_multi.php?record_id=<?= intval($r['ots_record_id']) ?>&church_id=<?= intval($r['church_id']) ?>" target="_blank" class="text-decoration-none">
-                                        #<?= intval($r['ots_record_id']) ?>
-                                    </a>
-                                    <?php if (!empty($r['ots_doc'])): ?>
-                                        <small class="text-muted d-block"><?= htmlspecialchars($r['ots_doc']) ?></small>
+                                <?php if ($r['_is_paired']): ?>
+                                    <?php if (!empty($r['ots_record_id'])): ?>
+                                        <a href="all_transactions/all_transactions_multi.php?record_id=<?= intval($r['ots_record_id']) ?>&church_id=<?= intval($r['church_id']) ?>" target="_blank" class="text-decoration-none">
+                                            #<?= intval($r['ots_record_id']) ?>
+                                        </a>
+                                        <?php if (!empty($r['ots_doc'])): ?>
+                                            <small class="text-muted d-block"><?= htmlspecialchars($r['ots_doc']) ?></small>
+                                        <?php endif; ?>
+                                    <?php else: ?>
+                                        <span class="text-muted">✅ Több tétel</span>
                                     <?php endif; ?>
                                 <?php else: ?>
                                     <span class="text-muted">-</span>
@@ -716,7 +900,7 @@ document.getElementById('query_info').textContent = '<?= $has_search ? ($error_m
                         </td>
                         <?php endif; ?>
 
-                        <?php if ($source === 'ots' || $source === 'both'): ?>
+                        <?php if ($source === 'ots' || $source === 'both' || $transfer_search): ?>
                         <td>
                             <?php if ($r['_source'] === 'OTS'): ?>
                                 <?= htmlspecialchars($r['flow_label'] ?? '-') ?>
@@ -734,6 +918,20 @@ document.getElementById('query_info').textContent = '<?= $has_search ? ($error_m
                         <td>
                             <?php if ($r['_source'] === 'OTS'): ?>
                                 <?= htmlspecialchars($r['CASH_DOCUMENT_NUMBER'] ?? '-') ?>
+                            <?php else: ?>
+                                <span class="text-muted">-</span>
+                            <?php endif; ?>
+                        </td>
+                        <?php endif; ?>
+                        <?php if ($transfer_search): ?>
+                        <td>
+                            <?php
+                            $partner_ids = $r['_transfer_partner_ids'] ?? [];
+                            if (!empty($partner_ids) && is_array($partner_ids)):
+                            ?>
+                                <a href="all_transactions/all_transactions_multi.php?record_id=<?= intval($partner_ids[0]) ?>&church_id=<?= intval($r['CHURCH_ID']) ?>" target="_blank" class="text-decoration-none" title="Partner: <?= htmlspecialchars(implode(', ', $partner_ids)) ?>">
+                                    🔗 #<?= htmlspecialchars(implode(', ', $partner_ids)) ?>
+                                </a>
                             <?php else: ?>
                                 <span class="text-muted">-</span>
                             <?php endif; ?>

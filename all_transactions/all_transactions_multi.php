@@ -19,18 +19,29 @@
 
   require_once __DIR__ . '/../lib/bootstrap.php';
   require_once __DIR__ . '/../lib/auth.php';
-  if (!isset($_SESSION[GN_CHURCH_ID]) || $_SESSION[GN_CHURCH_ID] <= 0)
-  {
-    build_user_context_from_ots();
-    $acs = get_accessible_church_ids();
-    if ($acs === null) {
+  build_user_context_from_ots();
+  if (is_admin()) {
+    if (!isset($_SESSION[GN_CHURCH_ID]) || $_SESSION[GN_CHURCH_ID] <= 0) {
       $_SESSION[GN_CHURCH_ID] = 1;
-    } elseif (is_array($acs) && count($acs) > 0) {
-      $_SESSION[GN_CHURCH_ID] = $acs[0];
-    } else {
+    }
+  } else {
+    $acs = get_accessible_church_ids();
+    if (empty($acs)) {
       header("Location: ../login.php");
       exit;
     }
+    $selected = intval($_SESSION['revizor_selected_church'] ?? 0);
+    if ($selected <= 0 || !in_array($selected, $acs, true)) {
+      unset($_SESSION['revizor_selected_church'], $_SESSION['revizor_selected_church_name']);
+      if (count($acs) === 1) {
+        set_selected_church_session($acs[0]);
+        $selected = intval($acs[0]);
+      } else {
+        header("Location: ../select-church.php?redirect=all_transactions/all_transactions_multi.php");
+        exit;
+      }
+    }
+    $_SESSION[GN_CHURCH_ID] = $selected;
   }
 
   // A Webix keretrendszer betöltése (abszolút /ots/ útvonalakkal, mert nincs virtuális host)
@@ -102,6 +113,15 @@ function escapeCell(value) {
   return value.replace(/[&<>"']/g, function(ch) {
     return {"&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;"}[ch];
   });
+}
+
+function escapeAttr(value) {
+  return String(value == null ? "" : value)
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
 }
 
 function cleanTableDataForExcel(table) {
@@ -445,6 +465,12 @@ webix.ready(function(){
         select: "row",
         columns: [
             { id: "RECORD_ID", header: "", width: 0, hidden: true },
+            { id: "actions", header: "", width: 45, template: function(obj) {
+                if (obj.VIA_BANK === 0) {
+                    return "<span class='cash-check-btn' onclick='openCashAudit(" + obj.RECORD_ID + ",\"" + escapeAttr(obj.DATETIME) + "\"," + (obj.SUMAMOUNT || 0) + ",\"" + escapeAttr(obj.RECEIPT_NUMBER || "") + "\",\"" + escapeAttr(obj.DESCRIPTION || "") + "\")' style='cursor:pointer;' title='Készpénz ellenőrzés'>🔍</span>";
+                }
+                return "";
+            }, css: { "text-align": "center" } },
             { id: "RECEIPT_NUMBER", header: ["Bizonylatszám", { content: "textFilter" }], width: 120, sort: "string", template: function(obj) { return escapeCell(obj.RECEIPT_NUMBER); }, footer: "" },
             { id: "DECISION_NUMBER", header: ["Biz. határozati szám", { content: "textFilter" }], width: 150, sort: "string", template: function(obj) { return escapeCell(obj.DECISION_NUMBER); }, footer: "" },
             { id: "DATETIME", header: ["Dátum", { content: "textFilter" }], width: 105, sort: "string", template: function(obj) { return escapeCell(formatDateDots(obj.DATETIME)); }, footer: "" },
@@ -519,9 +545,145 @@ webix.ready(function(){
     }
   }
 });
+
+var _cashAuditRecordId = 0;
+function openCashAudit(recordId, dateStr, amount, docNumber, descText) {
+    _cashAuditRecordId = recordId;
+    document.getElementById('ca_record_id').textContent = '#' + recordId;
+    document.getElementById('ca_date').textContent = dateStr || '-';
+    document.getElementById('ca_amount').textContent = Number(amount).toLocaleString('hu-HU') + ' Ft';
+    document.getElementById('ca_amount').className = amount < 0 ? 'fw-bold text-danger' : 'fw-bold text-success';
+    document.getElementById('ca_doc').textContent = docNumber || '-';
+    document.getElementById('ca_desc').textContent = descText || '-';
+    document.getElementById('ca_save_msg').textContent = '';
+    document.getElementById('ca_inspector').value = '';
+    document.getElementById('ca_notes').value = '';
+    var checkboxes = document.querySelectorAll('#ca_checklist input[type="checkbox"]');
+    checkboxes.forEach(function(cb) { cb.checked = false; });
+    document.getElementById('ca_checklist_spinner').style.display = 'block';
+    document.getElementById('ca_checklist_body').style.display = 'none';
+    var modal = new bootstrap.Modal(document.getElementById('cashAuditModal'));
+    modal.show();
+    var url = 'all_transactions_multi_cash_audit.php?record_id=' + recordId;
+    fetch(url)
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        document.getElementById('ca_checklist_spinner').style.display = 'none';
+        document.getElementById('ca_checklist_body').style.display = 'block';
+        if (data.status === 'OK' && data.data) {
+            var d = data.data;
+            document.getElementById('ca_inspector').value = d.inspector_name || '';
+            document.getElementById('ca_notes').value = d.notes || '';
+            var fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','receipt_number_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+            fields.forEach(function(f) {
+                var cb = document.getElementById('chk_' + f);
+                if (cb) cb.checked = d[f] == 1;
+            });
+            if (d.checked_at) {
+                document.getElementById('ca_save_msg').textContent = '✓ Mentve: ' + d.checked_at;
+            }
+        }
+    })
+    .catch(function() {
+        document.getElementById('ca_checklist_spinner').style.display = 'none';
+        document.getElementById('ca_checklist_body').style.display = 'block';
+    });
+}
+
+function saveCashAudit() {
+    var data = new FormData();
+    data.append('record_id', _cashAuditRecordId);
+    data.append('inspector_name', document.getElementById('ca_inspector').value);
+    data.append('notes', document.getElementById('ca_notes').value);
+    var fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','receipt_number_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+    fields.forEach(function(f) {
+        var cb = document.getElementById('chk_' + f);
+        data.append(f, cb && cb.checked ? '1' : '0');
+    });
+    data.append('csrf_token', '<?= $_SESSION['csrf_token'] ?? '' ?>');
+    document.getElementById('ca_save_msg').textContent = 'Mentés...';
+    document.getElementById('ca_save_msg').className = 'me-2 text-muted';
+    fetch('all_transactions_multi_cash_audit.php', { method: 'POST', body: data })
+    .then(function(r) { return r.json(); })
+    .then(function(result) {
+        if (result.status === 'OK') {
+            document.getElementById('ca_save_msg').textContent = '✓ Mentve';
+            document.getElementById('ca_save_msg').className = 'me-2 text-success';
+        } else {
+            document.getElementById('ca_save_msg').textContent = '✗ Hiba: ' + (result.message || 'ismeretlen');
+            document.getElementById('ca_save_msg').className = 'me-2 text-danger';
+        }
+    })
+    .catch(function() {
+        document.getElementById('ca_save_msg').textContent = '✗ Hálózati hiba';
+        document.getElementById('ca_save_msg').className = 'me-2 text-danger';
+    });
+}
 </script>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<!-- Cash Audit Modal -->
+<div class="modal fade" id="cashAuditModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">🔍 Készpénz tétel ellenőrzés</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <div class="row mb-2 g-2">
+          <div class="col-md-3"><strong>Rekord #:</strong> <span id="ca_record_id"></span></div>
+          <div class="col-md-3"><strong>Dátum:</strong> <span id="ca_date"></span></div>
+          <div class="col-md-3"><strong>Összeg:</strong> <span id="ca_amount"></span></div>
+          <div class="col-md-3"><strong>Bizonylat:</strong> <span id="ca_doc"></span></div>
+        </div>
+        <div class="row mb-3">
+          <div class="col-12"><strong>Leírás:</strong> <span id="ca_desc" class="text-muted"></span></div>
+        </div>
+        <hr>
+        <div id="ca_checklist">
+          <div id="ca_checklist_spinner" class="text-center py-3"><span class="spinner-border spinner-border-sm me-2"></span>Adatok betöltése...</div>
+          <div id="ca_checklist_body" style="display:none;">
+            <div class="row g-2">
+              <div class="col-md-6">
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_cash_voucher_ok" value="1"><label class="form-check-label" for="chk_cash_voucher_ok">Pénztárbizonylat rendben</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_date_filled" value="1"><label class="form-check-label" for="chk_date_filled">Dátum kitöltve</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_amount_ok" value="1"><label class="form-check-label" for="chk_amount_ok">Összeg pontos</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_description_ok" value="1"><label class="form-check-label" for="chk_description_ok">Megnevezés pontos</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_receipt_number_ok" value="1"><label class="form-check-label" for="chk_receipt_number_ok">Bizonylatszám szerepel</label></div></div>
+              </div>
+              <div class="col-md-6">
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_signature_treasurer" value="1"><label class="form-check-label" for="chk_signature_treasurer">Pénztáros aláírás</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_signature_receiver" value="1"><label class="form-check-label" for="chk_signature_receiver">Felvevő aláírása</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_signature_authorizer" value="1"><label class="form-check-label" for="chk_signature_authorizer">Utalványozó/engedélyező</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_invoice_ok" value="1"><label class="form-check-label" for="chk_invoice_ok">Számla megvan</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_decision_number_ok" value="1"><label class="form-check-label" for="chk_decision_number_ok">Határozati szám</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_tithe_card_ok" value="1"><label class="form-check-label" for="chk_tithe_card_ok">Tizedcédula megvan</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_fund_designation_ok" value="1"><label class="form-check-label" for="chk_fund_designation_ok">Pénzalap megjelölés helyes</label></div></div>
+                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_supporting_doc_ok" value="1"><label class="form-check-label" for="chk_supporting_doc_ok">Egyéb melléklet</label></div></div>
+              </div>
+            </div>
+            <hr>
+            <div class="mb-2">
+              <label class="form-label"><strong>Megjegyzés:</strong></label>
+              <textarea id="ca_notes" class="form-control" rows="2"></textarea>
+            </div>
+            <div class="mb-2">
+              <label class="form-label"><strong>Ellenőr neve:</strong></label>
+              <input type="text" id="ca_inspector" class="form-control">
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <span id="ca_save_msg" class="me-2 small"></span>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Bezár</button>
+        <button type="button" class="btn btn-primary" onclick="saveCashAudit()">💾 Mentés</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 </body>
 </html>
