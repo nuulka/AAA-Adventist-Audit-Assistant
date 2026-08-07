@@ -1,6 +1,7 @@
 <?php
-$bank_audit_fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok','bank_in_ots_ok'];
-$cash_audit_fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+$common_audit_fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+$bank_audit_fields = array_merge($common_audit_fields, ['invoice_ok','tithe_card_ok','bank_in_ots_ok']);
+$cash_audit_fields = array_merge($common_audit_fields, ['invoice_ok','tithe_card_ok']);
 ini_set('display_errors', 0);
 error_reporting(0);
 require_once __DIR__ . '/../ots/constant.php';
@@ -58,6 +59,8 @@ $conn->query("CREATE TABLE IF NOT EXISTS ots_cash_audit (
     signature_treasurer TINYINT(1) DEFAULT 0,
     signature_receiver TINYINT(1) DEFAULT 0,
     signature_authorizer TINYINT(1) DEFAULT 0,
+    signature_auditor TINYINT(1) DEFAULT 0,
+    stamp_ok TINYINT(1) DEFAULT 0,
     invoice_ok TINYINT(1) DEFAULT 0,
     tithe_card_ok TINYINT(1) DEFAULT 0,
     receipt_number_ok TINYINT(1) DEFAULT 0,
@@ -67,6 +70,14 @@ $conn->query("CREATE TABLE IF NOT EXISTS ots_cash_audit (
     notes TEXT DEFAULT NULL,
     UNIQUE KEY uk_ots_record (ots_record_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+// ALTER for existing tables that lack the new columns
+$cah_new_cols = ['signature_auditor','stamp_ok'];
+foreach ($cah_new_cols as $cah_col) {
+    $cah_col_res = $conn->query("SHOW COLUMNS FROM ots_cash_audit LIKE '" . $cah_col . "'");
+    if (!$cah_col_res || $cah_col_res->num_rows === 0) {
+        $conn->query("ALTER TABLE ots_cash_audit ADD COLUMN $cah_col TINYINT(1) DEFAULT 0");
+    }
+}
 function normalize_doccheck_date($value) {
     $value = trim((string)$value);
     if ($value === '') {
@@ -103,7 +114,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     } else {
         require_church_access(0); // will fail
     }
-    $fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok','bank_in_ots_ok'];
+    $fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok','bank_in_ots_ok'];
     $inspector = mb_substr(trim((string)($_POST['inspector_name'] ?? $_SESSION[GC_USER_FULL_NAME] ?? 'Ismeretlen')), 0, 100, 'UTF-8');
     $notes = mb_substr(trim((string)($_POST['notes'] ?? '')), 0, 1000, 'UTF-8');
     $checked_at = date('Y-m-d H:i:s');
@@ -148,7 +159,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     } else {
         require_church_access(0);
     }
-    $caf_fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+    $caf_fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
     $inspector = mb_substr(trim((string)($_POST['inspector_name'] ?? $_SESSION[GC_USER_FULL_NAME] ?? 'Ismeretlen')), 0, 100, 'UTF-8');
     $notes = mb_substr(trim((string)($_POST['notes'] ?? '')), 0, 1000, 'UTF-8');
     $checked_at = date('Y-m-d H:i:s');
@@ -331,6 +342,7 @@ if ($type === 'cash') {
                    ac.id AS audit_id, ac.inspector_name, ac.checked_at,
                    ac.cash_voucher_ok, ac.date_filled, ac.amount_ok, ac.description_ok,
                    ac.signature_treasurer, ac.signature_receiver, ac.signature_authorizer,
+                   ac.signature_auditor, ac.stamp_ok,
                    ac.invoice_ok, ac.tithe_card_ok, ac.receipt_number_ok, ac.decision_number_ok,
                     ac.fund_designation_ok, ac.supporting_doc_ok, ac.bank_in_ots_ok, ac.notes
             FROM bank_reconciliation br
@@ -440,6 +452,7 @@ if ($type === 'cash') {
     <div class="card mb-3">
         <div class="card-body py-2">
             <form method="GET" class="row g-2 align-items-end">
+                <input type="hidden" name="type" value="<?= $type ?>">
                 <div class="col-auto">
                     <label class="small mb-0">Gyülekezet</label>
                     <?php if (is_admin()): ?>
@@ -515,7 +528,10 @@ if ($type === 'cash') {
                     </thead>
                     <tbody>
                         <?php $idx = 1; foreach ($rows as $r): 
-                            $t_audit_fields = $type === 'cash' ? $cash_audit_fields : $bank_audit_fields;
+                            $is_expense = (float)$r['bank_amount'] < 0;
+                            $t_audit_fields = $common_audit_fields;
+                            if ($type === 'bank') $t_audit_fields[] = 'bank_in_ots_ok';
+                            $t_audit_fields[] = $is_expense ? 'invoice_ok' : 'tithe_card_ok';
                             $ok_count = 0;
                             $total_audit = count($t_audit_fields);
                             if ($r['audit_id']) {
@@ -605,20 +621,22 @@ if ($type === 'cash') {
                             <h6 class="border-bottom pb-1">💰 Pénztári bizonylatok</h6>
                             <?php 
                             $left_items = [
-                                'cash_voucher_ok' => 'Pénztárbizonylat rendben',
-                                'date_filled' => 'Dátum kitöltve',
-                                'amount_ok' => 'Összeg pontos',
-                                'description_ok' => 'Megnevezés pontos',
-                                'receipt_number_ok' => 'Bizonylatszám szerepel',
-                                'decision_number_ok' => 'Határozati szám (ha releváns)',
-                                'bank_in_ots_ok' => 'Banki tétel OTS-ben szerepel',
+                                'cash_voucher_ok' => ['Pénztárbizonylat rendben', 'common'],
+                                'date_filled' => ['Dátum kitöltve', 'common'],
+                                'amount_ok' => ['Összeg pontos', 'common'],
+                                'description_ok' => ['Megnevezés pontos', 'common'],
+                                'receipt_number_ok' => ['Bizonylatszám szerepel', 'common'],
+                                'decision_number_ok' => ['Határozati szám (ha releváns)', 'common'],
+                                'bank_in_ots_ok' => ['Banki tétel OTS-ben szerepel', 'bank_only'],
                             ];
-                            foreach ($left_items as $key => $label):
-                                $is_bank_only = $key === 'bank_in_ots_ok'; ?>
-                            <div class="checklist-item <?= $is_bank_only ? 'bank-only-item' : '' ?>">
+                            foreach ($left_items as $key => $item):
+                                $is_bank_only = $item[1] === 'bank_only';
+                                $data_req = $is_bank_only ? 'common' : $item[1];
+                            ?>
+                            <div class="checklist-item <?= $is_bank_only ? 'bank-only-item' : '' ?>" data-req="<?= $data_req ?>">
                                 <div class="form-check">
                                     <input class="form-check-input" type="checkbox" name="<?= $key ?>" value="1" id="chk_<?= $key ?>">
-                                    <label class="form-check-label" for="chk_<?= $key ?>"><?= $label ?></label>
+                                    <label class="form-check-label" for="chk_<?= $key ?>"><?= $item[0] ?></label>
                                 </div>
                             </div>
                             <?php endforeach; ?>
@@ -627,19 +645,21 @@ if ($type === 'cash') {
                             <h6 class="border-bottom pb-1">✍️ Aláírások / Mellékletek</h6>
                             <?php 
                             $right_items = [
-                                'signature_treasurer' => 'Pénztáros aláírás',
-                                'signature_receiver' => 'Felvevő aláírása',
-                                'signature_authorizer' => 'Utalványozó/engedélyező',
-                                'invoice_ok' => 'Számla megvan',
-                                'tithe_card_ok' => 'Tizedcédula megvan',
-                                'fund_designation_ok' => 'Alap megjelölés helyes',
-                                'supporting_doc_ok' => 'Egyéb melléklet (szerződés, stb.)',
+                                'signature_treasurer' => ['Pénztáros aláírás', 'common'],
+                                'signature_receiver' => ['<span id="lbl_signature_receiver">Felvevő aláírása</span>', 'common'],
+                                'signature_authorizer' => ['Utalványozó/engedélyező', 'common'],
+                                'signature_auditor' => ['Ellenőr aláírása', 'common'],
+                                'stamp_ok' => ['Kiállító bélyegzője / gyülekezet neve', 'common'],
+                                'invoice_ok' => ['Számla megvan', 'expense'],
+                                'tithe_card_ok' => ['Tizedcédula megvan', 'income'],
+                                'fund_designation_ok' => ['Alap megjelölés helyes', 'common'],
+                                'supporting_doc_ok' => ['Egyéb melléklet (szerződés, stb.)', 'common'],
                             ];
-                            foreach ($right_items as $key => $label): ?>
-                            <div class="checklist-item">
+                            foreach ($right_items as $key => $item): ?>
+                            <div class="checklist-item" data-req="<?= $item[1] ?>">
                                 <div class="form-check">
                                     <input class="form-check-input" type="checkbox" name="<?= $key ?>" value="1" id="chk_<?= $key ?>">
-                                    <label class="form-check-label" for="chk_<?= $key ?>"><?= $label ?></label>
+                                    <label class="form-check-label" for="chk_<?= $key ?>"><?= $item[0] ?></label>
                                 </div>
                             </div>
                             <?php endforeach; ?>
@@ -701,14 +721,24 @@ function openAudit(id, type) {
         document.getElementById('auditBankInfo').innerHTML = '<strong>' + htmlspecialchars(data.church_name || '-') + '</strong> &middot; ' + htmlspecialchars(data.bank_date || '-') + ' &middot; ' + Number(data.bank_amount).toLocaleString('hu-HU') + ' Ft<br><small>' + htmlspecialchars(data.bank_desc || '') + '</small> &middot; <span class="badge bg-' + (type === 'cash' ? 'info' : (data.status === 'OK' ? 'success' : (data.status === 'UNCHECKED' ? 'secondary' : 'warning'))) + '">' + (type === 'cash' ? 'KÉSZPÉNZ' : htmlspecialchars(data.status || 'UNCHECKED')) + '</span>';
         
         // Checkboxes beállítása
-        var fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok','bank_in_ots_ok'];
+        var fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok','bank_in_ots_ok'];
         fields.forEach(function(f) {
             var cb = document.getElementById('chk_' + f);
             if (cb) cb.checked = data.audit && data.audit[f] == 1;
         });
         document.querySelector('[name="inspector_name"]').value = data.audit ? data.audit.inspector_name : '<?= htmlspecialchars($_SESSION[GC_USER_FULL_NAME] ?? '', ENT_QUOTES, 'UTF-8') ?>';
         document.querySelector('[name="notes"]').value = data.audit ? data.audit.notes : '';
-        
+
+        // Dinamikus ellenőrző lista a tétel típusa szerint (bevétel / kiadás)
+        var isExpense = Number(data.bank_amount || 0) < 0;
+        document.querySelectorAll('.checklist-item[data-req]').forEach(function(el) {
+            var req = el.getAttribute('data-req');
+            if (req === 'expense') el.style.display = isExpense ? '' : 'none';
+            else if (req === 'income') el.style.display = isExpense ? 'none' : '';
+        });
+        var lblReceiver = document.getElementById('lbl_signature_receiver');
+        if (lblReceiver) lblReceiver.textContent = isExpense ? 'Felvevő aláírása' : 'Befizető aláírása';
+
         auditModal.show();
     })
     .catch(function() {

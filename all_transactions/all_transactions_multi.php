@@ -552,6 +552,15 @@ function openCashAudit(recordId, dateStr, amount, docNumber, descText) {
     document.getElementById('ca_record_id').textContent = '#' + recordId;
     document.getElementById('ca_date').textContent = dateStr || '-';
     document.getElementById('ca_amount').textContent = Number(amount).toLocaleString('hu-HU') + ' Ft';
+    // Dinamikus ellenőrző lista a tétel típusa szerint (bevétel / kiadás)
+    var isExpense = Number(amount) < 0;
+    document.querySelectorAll('#ca_checklist .checklist-item[data-req]').forEach(function(el) {
+        var req = el.getAttribute('data-req');
+        if (req === 'expense') el.style.display = isExpense ? '' : 'none';
+        else if (req === 'income') el.style.display = isExpense ? 'none' : '';
+    });
+    var lblReceiver = document.getElementById('ca_lbl_signature_receiver');
+    if (lblReceiver) lblReceiver.textContent = isExpense ? 'Felvevő aláírása' : 'Befizető aláírása';
     document.getElementById('ca_amount').className = amount < 0 ? 'fw-bold text-danger' : 'fw-bold text-success';
     document.getElementById('ca_doc').textContent = docNumber || '-';
     document.getElementById('ca_desc').textContent = descText || '-';
@@ -574,7 +583,7 @@ function openCashAudit(recordId, dateStr, amount, docNumber, descText) {
             var d = data.data;
             document.getElementById('ca_inspector').value = d.inspector_name || '';
             document.getElementById('ca_notes').value = d.notes || '';
-            var fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','receipt_number_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+            var fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','receipt_number_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
             fields.forEach(function(f) {
                 var cb = document.getElementById('chk_' + f);
                 if (cb) cb.checked = d[f] == 1;
@@ -595,7 +604,7 @@ function saveCashAudit() {
     data.append('record_id', _cashAuditRecordId);
     data.append('inspector_name', document.getElementById('ca_inspector').value);
     data.append('notes', document.getElementById('ca_notes').value);
-    var fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','receipt_number_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+    var fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','receipt_number_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
     fields.forEach(function(f) {
         var cb = document.getElementById('chk_' + f);
         data.append(f, cb && cb.checked ? '1' : '0');
@@ -647,21 +656,23 @@ function saveCashAudit() {
           <div id="ca_checklist_body" style="display:none;">
             <div class="row g-2">
               <div class="col-md-6">
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_cash_voucher_ok" value="1"><label class="form-check-label" for="chk_cash_voucher_ok">Pénztárbizonylat rendben</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_date_filled" value="1"><label class="form-check-label" for="chk_date_filled">Dátum kitöltve</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_amount_ok" value="1"><label class="form-check-label" for="chk_amount_ok">Összeg pontos</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_description_ok" value="1"><label class="form-check-label" for="chk_description_ok">Megnevezés pontos</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_receipt_number_ok" value="1"><label class="form-check-label" for="chk_receipt_number_ok">Bizonylatszám szerepel</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_cash_voucher_ok" value="1"><label class="form-check-label" for="chk_cash_voucher_ok">Pénztárbizonylat rendben</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_date_filled" value="1"><label class="form-check-label" for="chk_date_filled">Dátum kitöltve</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_amount_ok" value="1"><label class="form-check-label" for="chk_amount_ok">Összeg pontos</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_description_ok" value="1"><label class="form-check-label" for="chk_description_ok">Megnevezés pontos</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_receipt_number_ok" value="1"><label class="form-check-label" for="chk_receipt_number_ok">Bizonylatszám szerepel</label></div></div>
               </div>
               <div class="col-md-6">
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_signature_treasurer" value="1"><label class="form-check-label" for="chk_signature_treasurer">Pénztáros aláírás</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_signature_receiver" value="1"><label class="form-check-label" for="chk_signature_receiver">Felvevő aláírása</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_signature_authorizer" value="1"><label class="form-check-label" for="chk_signature_authorizer">Utalványozó/engedélyező</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_invoice_ok" value="1"><label class="form-check-label" for="chk_invoice_ok">Számla megvan</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_decision_number_ok" value="1"><label class="form-check-label" for="chk_decision_number_ok">Határozati szám</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_tithe_card_ok" value="1"><label class="form-check-label" for="chk_tithe_card_ok">Tizedcédula megvan</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_fund_designation_ok" value="1"><label class="form-check-label" for="chk_fund_designation_ok">Pénzalap megjelölés helyes</label></div></div>
-                <div class="checklist-item py-1"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_supporting_doc_ok" value="1"><label class="form-check-label" for="chk_supporting_doc_ok">Egyéb melléklet</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_signature_treasurer" value="1"><label class="form-check-label" for="chk_signature_treasurer">Pénztáros aláírás</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_signature_receiver" value="1"><label class="form-check-label" for="chk_signature_receiver"><span id="ca_lbl_signature_receiver">Felvevő aláírása</span></label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_signature_authorizer" value="1"><label class="form-check-label" for="chk_signature_authorizer">Utalványozó/engedélyező</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_signature_auditor" value="1"><label class="form-check-label" for="chk_signature_auditor">Ellenőr aláírása</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_stamp_ok" value="1"><label class="form-check-label" for="chk_stamp_ok">Kiállító bélyegzője / gyülekezet neve</label></div></div>
+                <div class="checklist-item py-1" data-req="expense"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_invoice_ok" value="1"><label class="form-check-label" for="chk_invoice_ok">Számla megvan</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_decision_number_ok" value="1"><label class="form-check-label" for="chk_decision_number_ok">Határozati szám</label></div></div>
+                <div class="checklist-item py-1" data-req="income"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_tithe_card_ok" value="1"><label class="form-check-label" for="chk_tithe_card_ok">Tizedcédula megvan</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_fund_designation_ok" value="1"><label class="form-check-label" for="chk_fund_designation_ok">Pénzalap megjelölés helyes</label></div></div>
+                <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_supporting_doc_ok" value="1"><label class="form-check-label" for="chk_supporting_doc_ok">Egyéb melléklet</label></div></div>
               </div>
             </div>
             <hr>

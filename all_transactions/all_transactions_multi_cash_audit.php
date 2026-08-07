@@ -29,6 +29,8 @@ $conn->query("CREATE TABLE IF NOT EXISTS ots_cash_audit (
     signature_treasurer TINYINT(1) DEFAULT 0,
     signature_receiver TINYINT(1) DEFAULT 0,
     signature_authorizer TINYINT(1) DEFAULT 0,
+    signature_auditor TINYINT(1) DEFAULT 0,
+    stamp_ok TINYINT(1) DEFAULT 0,
     invoice_ok TINYINT(1) DEFAULT 0,
     tithe_card_ok TINYINT(1) DEFAULT 0,
     receipt_number_ok TINYINT(1) DEFAULT 0,
@@ -38,6 +40,14 @@ $conn->query("CREATE TABLE IF NOT EXISTS ots_cash_audit (
     notes TEXT DEFAULT NULL,
     UNIQUE KEY uk_ots_record (ots_record_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+// ALTER for existing tables that lack the new columns
+$cash_audit_new_cols = ['signature_auditor','stamp_ok'];
+foreach ($cash_audit_new_cols as $cah_col) {
+    $cah_col_res = $conn->query("SHOW COLUMNS FROM ots_cash_audit LIKE '" . $cah_col . "'");
+    if (!$cah_col_res || $cah_col_res->num_rows === 0) {
+        $conn->query("ALTER TABLE ots_cash_audit ADD COLUMN $cah_col TINYINT(1) DEFAULT 0");
+    }
+}
 
 $method = $_SERVER['REQUEST_METHOD'];
 
@@ -97,7 +107,7 @@ if ($method === 'POST') {
     $inspector_name = isset($_POST['inspector_name']) ? trim(mb_substr($_POST['inspector_name'], 0, 100, 'UTF-8')) : '';
     $notes = isset($_POST['notes']) ? trim(mb_substr($_POST['notes'], 0, 5000, 'UTF-8')) : '';
 
-    $fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','receipt_number_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+    $fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','receipt_number_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
     $set_parts = [];
     $set_types = '';
     $set_params = [];

@@ -234,6 +234,8 @@ $conn->query("CREATE TABLE IF NOT EXISTS audit_checklist (
     signature_treasurer TINYINT(1) DEFAULT 0,
     signature_receiver TINYINT(1) DEFAULT 0,
     signature_authorizer TINYINT(1) DEFAULT 0,
+    signature_auditor TINYINT(1) DEFAULT 0,
+    stamp_ok TINYINT(1) DEFAULT 0,
     invoice_ok TINYINT(1) DEFAULT 0,
     tithe_card_ok TINYINT(1) DEFAULT 0,
     receipt_number_ok TINYINT(1) DEFAULT 0,
@@ -245,10 +247,13 @@ $conn->query("CREATE TABLE IF NOT EXISTS audit_checklist (
     UNIQUE KEY uk_bank_rec (bank_reconciliation_id),
     FOREIGN KEY (bank_reconciliation_id) REFERENCES bank_reconciliation(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
-// ALTER for existing tables that lack the new column
-$ac_cols = $conn->query("SHOW COLUMNS FROM audit_checklist LIKE 'bank_in_ots_ok'");
-if ($ac_cols && $ac_cols->num_rows === 0) {
-    $conn->query("ALTER TABLE audit_checklist ADD COLUMN bank_in_ots_ok TINYINT(1) DEFAULT 0");
+// ALTER for existing tables that lack the new columns
+$ac_new_cols = ['bank_in_ots_ok','signature_auditor','stamp_ok'];
+foreach ($ac_new_cols as $ac_col) {
+    $ac_cols = $conn->query("SHOW COLUMNS FROM audit_checklist LIKE '$ac_col'");
+    if (!$ac_cols || $ac_cols->num_rows === 0) {
+        $conn->query("ALTER TABLE audit_checklist ADD COLUMN $ac_col TINYINT(1) DEFAULT 0");
+    }
 }
 
 // OTS Kiadás típusok meghatározása (az előjel helyes számításához)
@@ -2755,11 +2760,30 @@ function showAdminOnlyModal() {
 }
 
 var _auditLoadedRecId = 0;
-var _currentItemType = 'bank';
+var _currentItemType = 'bank_income';
 
 var AUDIT_CHECKLISTS = {
-    bank: {
-        title: '🏦 Banki tétel ellenőrzése',
+    bank_income: {
+        title: '🏦 Bevételi banki tétel ellenőrzése',
+        groups: [
+            {
+                fields: [
+                    { key: 'bank_in_ots_ok', label: 'Banki tétel OTS-ben szerepel', auto: true },
+                    { key: 'description_ok', label: 'Pontos-e a megnevezés' },
+                    { key: 'decision_number_ok', label: 'Határozatszám' },
+                    { key: 'tithe_card_ok', label: 'Tizedcédula megvan' },
+                    { key: 'fund_designation_ok', label: 'Pénzalap megjelölés helyes' },
+                    { key: 'signature_receiver', label: 'Befizető aláírása' },
+                    { key: 'signature_treasurer', label: 'Pénztáros aláírás' },
+                    { key: 'signature_authorizer', label: 'Utalványozó/engedélyező' },
+                    { key: 'signature_auditor', label: 'Ellenőr aláírása' },
+                    { key: 'stamp_ok', label: 'Kiállító bélyegzője / gyülekezet neve' },
+                ]
+            }
+        ]
+    },
+    bank_expense: {
+        title: '🏦 Kiadási banki tétel ellenőrzése',
         groups: [
             {
                 fields: [
@@ -2768,6 +2792,11 @@ var AUDIT_CHECKLISTS = {
                     { key: 'decision_number_ok', label: 'Határozatszám' },
                     { key: 'invoice_ok', label: 'Számla meg van' },
                     { key: 'fund_designation_ok', label: 'Pénzalap megjelölés helyes' },
+                    { key: 'signature_receiver', label: 'Felvevő aláírása' },
+                    { key: 'signature_treasurer', label: 'Pénztáros aláírás' },
+                    { key: 'signature_authorizer', label: 'Utalványozó/engedélyező' },
+                    { key: 'signature_auditor', label: 'Ellenőr aláírása' },
+                    { key: 'stamp_ok', label: 'Kiállító bélyegzője / gyülekezet neve' },
                 ]
             }
         ]
@@ -2788,7 +2817,9 @@ var AUDIT_CHECKLISTS = {
             {
                 heading: 'Aláírások / Mellékletek',
                 fields: [
-                    { key: 'signature_receiver', label: 'Felvevő aláírása' },
+                    { key: 'signature_receiver', label: 'Befizető aláírása' },
+                    { key: 'signature_auditor', label: 'Ellenőr aláírása' },
+                    { key: 'stamp_ok', label: 'Kiállító bélyegzője / gyülekezet neve' },
                     { key: 'tithe_card_ok', label: 'Tizedcédula megvan' },
                     { key: 'fund_designation_ok', label: 'Pénzalap megjelölés helyes' },
                     { key: 'supporting_doc_ok', label: 'Egyéb melléklet' },
@@ -2814,6 +2845,8 @@ var AUDIT_CHECKLISTS = {
                 fields: [
                     { key: 'signature_treasurer', label: 'Pénztáros aláírás' },
                     { key: 'signature_authorizer', label: 'Utalványozó/engedélyező' },
+                    { key: 'signature_auditor', label: 'Ellenőr aláírása' },
+                    { key: 'stamp_ok', label: 'Kiállító bélyegzője / gyülekezet neve' },
                     { key: 'invoice_ok', label: 'Számla megvan' },
                     { key: 'decision_number_ok', label: 'Határozati szám' },
                     { key: 'fund_designation_ok', label: 'Pénzalap megjelölés helyes' },
@@ -2825,8 +2858,8 @@ var AUDIT_CHECKLISTS = {
 };
 
 function getItemType() {
-    // Jelenleg minden rekord banki tétel; később készpénz esetén 'cash_income' / 'cash_expense'
-    return 'bank';
+    var isExpense = _currentViewingData && Number(_currentViewingData.bank_amount || 0) < 0;
+    return isExpense ? 'bank_expense' : 'bank_income';
 }
 
 function renderAuditChecklist(type) {
@@ -2870,9 +2903,9 @@ function toggleAuditPanel() {
         .then(function(r) { return r.json(); })
         .then(function(data) {
             // Összes lehetséges mező végigjárása az audit adatokból
-            var fields = (_currentItemType === 'bank')
-                ? ['bank_in_ots_ok','description_ok','decision_number_ok','invoice_ok','fund_designation_ok']
-                : ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+            var fields = (_currentItemType === 'bank_income' || _currentItemType === 'bank_expense')
+                ? ['bank_in_ots_ok','description_ok','decision_number_ok','invoice_ok','tithe_card_ok','fund_designation_ok','signature_receiver','signature_treasurer','signature_authorizer','signature_auditor','stamp_ok','supporting_doc_ok','receipt_number_ok']
+                : ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
             fields.forEach(function(f) {
                 var cb = document.getElementById('chk_' + f);
                 if (cb) cb.checked = data.audit && data.audit[f] == 1;

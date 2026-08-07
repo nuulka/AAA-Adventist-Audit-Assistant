@@ -25,3 +25,7 @@ google_ai_modul/uploads/
 .idea/
 *.swp
 *.swo
+
+# Local OTS dev DB override
+../ots/sconnect.local.php
+sconnect.local.php
