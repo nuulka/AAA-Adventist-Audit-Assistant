@@ -55,17 +55,18 @@ function render_dev_toggle() {
         $_SESSION['csrf_token'] = bin2hex(random_bytes(32));
     }
     $active = !empty($_SESSION['revizor_dev_mode']);
-    $label = $active ? '👤 Dev: User' : '🛠️ Dev: Admin';
-    $class = $active ? 'btn-outline-warning' : 'btn-outline-secondary';
+    $label = $active ? '🛠️ Adminisztrátori nézet' : '👤 Felhasználói nézet';
+    $class = $active ? 'btn-outline-secondary' : 'btn-outline-warning';
+    $title = $active ? 'Vissza adminisztrátori nézetre' : 'Felhasználói nézet megtekintése (fejlesztői teszt)';
     $csrf = htmlspecialchars($_SESSION['csrf_token'] ?? '', ENT_QUOTES, 'UTF-8');
     echo '<form method="POST" class="d-inline m-0">';
     echo '<input type="hidden" name="csrf_token" value="' . $csrf . '">';
-    echo '<button type="submit" name="dev_toggle" value="1" class="btn btn-sm ' . $class . '" title="Fejlesztői mód átkapcsolása">' . $label . '</button>';
+    echo '<button type="submit" name="dev_toggle" value="1" class="btn btn-sm ' . $class . '" title="' . $title . '">' . $label . '</button>';
     echo '</form>';
 }
 
 function get_user_role_label() {
-    if (is_superadmin() && !empty($_SESSION['revizor_dev_mode'])) return '👤 Felhasználó (fejlesztői)';
+    if (is_superadmin() && !empty($_SESSION['revizor_dev_mode'])) return '👤 Felhasználói nézet';
     if (is_superadmin()) return '🛠️ Admin / Fejlesztő';
     if (is_admin()) return '👑 Adminisztrátor';
     if (is_revizor()) return '🔍 Revizor';

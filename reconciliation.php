@@ -1822,6 +1822,14 @@ if ($churches_query && $churches_query->num_rows > 0) {
     }
 }
 
+// Aktív gyülekezet szinkronizálása a session-nel (admin): amit a szűrőben kiválasztunk,
+// az érvényes legyen a többi oldalon is, amíg át nem állítjuk.
+if (is_admin() && $selected_church_id > 0) {
+    set_selected_church_session($selected_church_id);
+} elseif (is_admin() && isset($_GET['church_filter']) && trim($_GET['church_filter']) === '' && $_GET['church_filter'] === '') {
+    unset($_SESSION['revizor_selected_church'], $_SESSION['revizor_selected_church_name']);
+}
+
 $where_parts = [];
 $where_params = [];
 $where_types = '';
@@ -2214,7 +2222,7 @@ unset($row);
                     <option value="<?php echo htmlspecialchars($church); ?>"></option>
                 <?php endforeach; ?>
             </datalist>
-            <?php if($selected_church_id !== -1): ?><a href="reconciliation.php" class="btn btn-sm btn-outline-danger text-nowrap" title="Szűrés törlése">✕</a><?php endif; ?>
+            <?php if($selected_church_id !== -1): ?><a href="reconciliation.php?church_filter=" class="btn btn-sm btn-outline-danger text-nowrap" title="Szűrés törlése">✕</a><?php endif; ?>
             <?php else: ?>
             <span class="form-control bg-light" style="height:31px;width:auto;display:inline-block;border:1px solid #dee2e6;padding:2px 8px;border-radius:4px;line-height:26px;">
                 🏛 <?php echo htmlspecialchars($selected_church_name ?: '#' . $selected_church_id); ?>

@@ -19,9 +19,14 @@
 
   require_once __DIR__ . '/../lib/bootstrap.php';
   require_once __DIR__ . '/../lib/auth.php';
+  require_once __DIR__ . '/../lib/session.php';
   build_user_context_from_ots();
+  ensure_revizor_csrf_token();
   if (is_admin()) {
-    if (!isset($_SESSION[GN_CHURCH_ID]) || $_SESSION[GN_CHURCH_ID] <= 0) {
+    $sel_church = isset($_SESSION['revizor_selected_church']) ? intval($_SESSION['revizor_selected_church']) : 0;
+    if ($sel_church > 0) {
+      $_SESSION[GN_CHURCH_ID] = $sel_church;
+    } elseif (!isset($_SESSION[GN_CHURCH_ID]) || $_SESSION[GN_CHURCH_ID] <= 0) {
       $_SESSION[GN_CHURCH_ID] = 1;
     }
   } else {
@@ -191,8 +196,9 @@ function savedStartDate() {
 }
 
 function savedChurchId(defaultChurchId) {
+  if (defaultChurchId > 0) return defaultChurchId;
   var churchId = getCookieValue("OTS_ALL_TRANSACTIONS_MULTI_CHURCH_ID");
-  return /^\d+$/.test(churchId || "") ? Number(churchId) : defaultChurchId;
+  return /^\d+$/.test(churchId || "") ? Number(churchId) : 0;
 }
 
 function savedFlow() {
@@ -203,6 +209,17 @@ function savedFlow() {
 function rememberShortSelections(values) {
   setCookieValueHours("OTS_ALL_TRANSACTIONS_MULTI_CHURCH_ID", values.church_id || "", 2);
   setCookieValueHours("OTS_ALL_TRANSACTIONS_MULTI_FLOW", values.flow || "bank", 2);
+  syncSelectedChurchToSession(values.church_id);
+}
+
+function syncSelectedChurchToSession(churchId) {
+  if (!churchId) return;
+  var body = 'church_id=' + encodeURIComponent(churchId) + '&csrf_token=' + encodeURIComponent('<?= htmlspecialchars($_SESSION['csrf_token'] ?? '', ENT_QUOTES, 'UTF-8') ?>');
+  fetch('../lib/update_selected_church.php', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+    body: body
+  }).catch(function() {});
 }
 
 function showLoadError(err, url) {
@@ -369,7 +386,7 @@ webix.ready(function(){
             cols: [
               { view: "datepicker", label: "Kezdő dátum:", name: "start_date", format: "%Y.%m.%d", stringResult: true, value: savedStartDate(), labelWidth: 105, width: 220 },
               { view: "datepicker", label: "Befejező dátum:", name: "end_date", format: "%Y.%m.%d", stringResult: true, value: new Date(), labelWidth: 115, width: 230 },
-              { view: "combo", label: "Gyülekezet:", name: "church_id", options: "/ots/church_for_combo.php?userole=1", value: savedChurchId(<?php echo intval(!is_admin() && !empty($_SESSION['revizor_selected_church']) ? $_SESSION['revizor_selected_church'] : (isset($_SESSION[GN_CHURCH_ID]) ? $_SESSION[GN_CHURCH_ID] : 0)); ?>), labelWidth: 90, width: 270<?= !is_admin() ? ', readonly:true' : '' ?> },
+              { view: "combo", label: "Gyülekezet:", name: "church_id", options: "/ots/church_for_combo.php?userole=1", value: savedChurchId(<?php echo intval(!empty($_SESSION['revizor_selected_church']) ? $_SESSION['revizor_selected_church'] : (isset($_SESSION[GN_CHURCH_ID]) ? $_SESSION[GN_CHURCH_ID] : 0)); ?>), labelWidth: 90, width: 270<?= !is_admin() ? ', readonly:true' : '' ?> },
               { view: "segmented", label: "Forgalom:", name: "flow", value: savedFlow(), options: [
                   { id: "bank", value: "<span class='webix_icon fas fa-university' title='Bank'></span>" },
                   { id: "cash", value: "<span class='webix_icon fas fa-money-bill-wave' title='Készpénz'></span>" },

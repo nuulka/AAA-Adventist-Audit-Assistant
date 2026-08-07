@@ -22,7 +22,16 @@ ensure_revizor_csrf_token();
 log_activity('page_view', ['page' => 'document_check']);
 
 if (is_admin()) {
-    $church_id = isset($_GET['church_id']) ? intval($_GET['church_id']) : 0;
+    if (isset($_GET['church_id'])) {
+        $church_id = intval($_GET['church_id']);
+        if ($church_id > 0) {
+            set_selected_church_session($church_id);
+        } else {
+            unset($_SESSION['revizor_selected_church'], $_SESSION['revizor_selected_church_name']);
+        }
+    } else {
+        $church_id = intval($_SESSION['revizor_selected_church'] ?? 0);
+    }
 } else {
     $church_id = require_selected_church('document_check.php');
 }
@@ -102,6 +111,7 @@ $date_to = normalize_doccheck_date($_GET['date_to'] ?? '');
 $amount_min = isset($_GET['amount_min']) && $_GET['amount_min'] !== '' ? floatval($_GET['amount_min']) : null;
 $amount_max = isset($_GET['amount_max']) && $_GET['amount_max'] !== '' ? floatval($_GET['amount_max']) : null;
 $direction = isset($_GET['direction']) && in_array($_GET['direction'], ['income', 'expense'], true) ? $_GET['direction'] : '';
+$search_desc = isset($_GET['search_desc']) ? trim((string)$_GET['search_desc']) : '';
 
 // AJAX: audit checklist mentése
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_audit') {
@@ -256,19 +266,18 @@ if ($type === 'cash') {
     if ($date_to) { $cash_clauses[] = 'T.DATETIME <= ?'; $cash_params[] = $date_to . ' 23:59:59'; $cash_types .= 's'; }
 
     $adj_sql = "IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)";
+    $desc_sql = "TRIM(CONCAT(IFNULL(CONCAT_WS(' ', p.NAME_PREFIX, p.NAME, p.NAME_SUFFIX), ''), ' ', IFNULL(nt1.NAME, ''), ' ', IFNULL(nt2.NAME, '')))";
     if ($amount_min !== null) { $cash_clauses[] = "ABS($adj_sql) >= ?"; $cash_params[] = $amount_min; $cash_types .= 'd'; }
     if ($amount_max !== null) { $cash_clauses[] = "ABS($adj_sql) <= ?"; $cash_params[] = $amount_max; $cash_types .= 'd'; }
     if ($direction === 'income') { $cash_clauses[] = "$adj_sql >= 0"; }
     if ($direction === 'expense') { $cash_clauses[] = "$adj_sql < 0"; }
+    if ($search_desc !== '') { $cash_clauses[] = "$desc_sql LIKE ?"; $cash_params[] = '%' . $search_desc . '%'; $cash_types .= 's'; }
 
     $cash_where = implode(' AND ', $cash_clauses);
 
     $cash_sql = "SELECT T.RECORD_ID, T.CHURCH_ID, T.DATETIME AS bank_date, T.VIA_BANK,
                         $adj_sql AS bank_amount, T.CASH_DOCUMENT_NUMBER,
-                        TRIM(CONCAT(
-                            IFNULL(CONCAT_WS(' ', p.NAME_PREFIX, p.NAME, p.NAME_SUFFIX), ''),
-                            ' ', IFNULL(nt1.NAME, ''), ' ', IFNULL(nt2.NAME, '')
-                        )) AS bank_desc
+                        $desc_sql AS bank_desc
                  FROM TRANSACTIONS T
                  LEFT JOIN PERSONS p ON T.PERSON_ID = p.id
                  LEFT JOIN NAMES_OF_TRANSACTION nt1 ON T.NAME_ID = nt1.id
@@ -348,6 +357,7 @@ if ($type === 'cash') {
     if ($amount_max !== null) { $clauses[] = 'ABS(br.bank_amount) <= ?'; $params[] = $amount_max; $types .= 'd'; }
     if ($direction === 'income') { $clauses[] = 'br.bank_amount >= 0'; }
     if ($direction === 'expense') { $clauses[] = 'br.bank_amount < 0'; }
+    if ($search_desc !== '') { $clauses[] = 'br.bank_desc LIKE ?'; $params[] = '%' . $search_desc . '%'; $types .= 's'; }
     $where_sql = implode(' AND ', $clauses);
 
     $sql = "SELECT br.*,
@@ -469,7 +479,7 @@ if ($type === 'cash') {
                     <label class="small mb-0">Gyülekezet</label>
                     <?php if (is_admin()): ?>
                     <select name="church_id" class="form-select form-select-sm" style="width:200px;">
-                        <option value="0">Összes</option>
+                        <option value="0" <?= $church_id === 0 ? 'selected' : '' ?>>Összes</option>
                         <?php foreach ($churches as $c): ?>
                         <option value="<?= (int)$c['id'] ?>" <?= $church_id === (int)$c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name'] ?? '#' . $c['id']) ?></option>
                         <?php endforeach; ?>
@@ -504,6 +514,10 @@ if ($type === 'cash') {
                         <option value="income" <?= $direction === 'income' ? 'selected' : '' ?>>Bevétel</option>
                         <option value="expense" <?= $direction === 'expense' ? 'selected' : '' ?>>Kiadás</option>
                     </select>
+                </div>
+                <div class="col-auto">
+                    <label class="small mb-0">Közlemény</label>
+                    <input type="text" name="search_desc" class="form-control form-control-sm" value="<?= htmlspecialchars($search_desc) ?>" style="width:200px;" placeholder="Keresés a közleményben...">
                 </div>
                 <div class="col-auto">
                     <button type="submit" class="btn btn-primary btn-sm">🔎 Szűrés</button>

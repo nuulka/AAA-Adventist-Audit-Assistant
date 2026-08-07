@@ -81,7 +81,16 @@ if (!in_array($source, $source_whitelist, true)) {
     $source = 'bank';
 }
 if (is_admin()) {
-    $church_id = isset($_GET['church_id']) ? intval($_GET['church_id']) : 0;
+    if (isset($_GET['church_id'])) {
+        $church_id = intval($_GET['church_id']);
+        if ($church_id > 0) {
+            set_selected_church_session($church_id);
+        } else {
+            unset($_SESSION['revizor_selected_church'], $_SESSION['revizor_selected_church_name']);
+        }
+    } else {
+        $church_id = intval($_SESSION['revizor_selected_church'] ?? 0);
+    }
 } else {
     $church_id = require_selected_church('search.php');
 }
