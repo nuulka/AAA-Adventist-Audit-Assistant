@@ -78,6 +78,13 @@ foreach ($cah_new_cols as $cah_col) {
         $conn->query("ALTER TABLE ots_cash_audit ADD COLUMN $cah_col TINYINT(1) DEFAULT 0");
     }
 }
+$ac_new_cols = ['signature_auditor','stamp_ok'];
+foreach ($ac_new_cols as $ac_col) {
+    $ac_col_res = $conn->query("SHOW COLUMNS FROM audit_checklist LIKE '" . $ac_col . "'");
+    if (!$ac_col_res || $ac_col_res->num_rows === 0) {
+        $conn->query("ALTER TABLE audit_checklist ADD COLUMN $ac_col TINYINT(1) DEFAULT 0");
+    }
+}
 function normalize_doccheck_date($value) {
     $value = trim((string)$value);
     if ($value === '') {
@@ -94,6 +101,7 @@ $date_from = normalize_doccheck_date($_GET['date_from'] ?? '');
 $date_to = normalize_doccheck_date($_GET['date_to'] ?? '');
 $amount_min = isset($_GET['amount_min']) && $_GET['amount_min'] !== '' ? floatval($_GET['amount_min']) : null;
 $amount_max = isset($_GET['amount_max']) && $_GET['amount_max'] !== '' ? floatval($_GET['amount_max']) : null;
+$direction = isset($_GET['direction']) && in_array($_GET['direction'], ['income', 'expense'], true) ? $_GET['direction'] : '';
 
 // AJAX: audit checklist mentése
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_audit') {
@@ -250,6 +258,8 @@ if ($type === 'cash') {
     $adj_sql = "IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)";
     if ($amount_min !== null) { $cash_clauses[] = "ABS($adj_sql) >= ?"; $cash_params[] = $amount_min; $cash_types .= 'd'; }
     if ($amount_max !== null) { $cash_clauses[] = "ABS($adj_sql) <= ?"; $cash_params[] = $amount_max; $cash_types .= 'd'; }
+    if ($direction === 'income') { $cash_clauses[] = "$adj_sql >= 0"; }
+    if ($direction === 'expense') { $cash_clauses[] = "$adj_sql < 0"; }
 
     $cash_where = implode(' AND ', $cash_clauses);
 
@@ -336,6 +346,8 @@ if ($type === 'cash') {
     if ($date_to) { $clauses[] = 'br.bank_date <= ?'; $params[] = $date_to; $types .= 's'; }
     if ($amount_min !== null) { $clauses[] = 'ABS(br.bank_amount) >= ?'; $params[] = $amount_min; $types .= 'd'; }
     if ($amount_max !== null) { $clauses[] = 'ABS(br.bank_amount) <= ?'; $params[] = $amount_max; $types .= 'd'; }
+    if ($direction === 'income') { $clauses[] = 'br.bank_amount >= 0'; }
+    if ($direction === 'expense') { $clauses[] = 'br.bank_amount < 0'; }
     $where_sql = implode(' AND ', $clauses);
 
     $sql = "SELECT br.*,
@@ -486,6 +498,14 @@ if ($type === 'cash') {
                     <input type="number" name="amount_max" class="form-control form-control-sm" value="<?= $amount_max !== null ? $amount_max : '' ?>" style="width:130px;" step="1">
                 </div>
                 <div class="col-auto">
+                    <label class="small mb-0">Típus</label>
+                    <select name="direction" class="form-select form-select-sm" style="width:120px;">
+                        <option value="">Mind</option>
+                        <option value="income" <?= $direction === 'income' ? 'selected' : '' ?>>Bevétel</option>
+                        <option value="expense" <?= $direction === 'expense' ? 'selected' : '' ?>>Kiadás</option>
+                    </select>
+                </div>
+                <div class="col-auto">
                     <button type="submit" class="btn btn-primary btn-sm">🔎 Szűrés</button>
                     <a href="document_check.php" class="btn btn-outline-secondary btn-sm">✕</a>
                 </div>
@@ -612,6 +632,7 @@ if ($type === 'cash') {
             </div>
             <div class="modal-body">
                 <div id="auditBankInfo" class="mb-3 p-2 bg-light rounded small"></div>
+                <div class="mb-3 p-2 bg-info-subtle text-dark rounded small">💡 Ha hiányzik, <b>ne</b> pipáld ki; ha megvan, vagy <b>nem szükséges</b>, akkor tegyél egy pipát a kis négyzetbe!</div>
                 <form id="auditForm">
                     <input type="hidden" name="bank_reconciliation_id" id="auditBankRecId" value="">
                     <input type="hidden" name="ots_record_id" id="auditOtsRecId" value="">
