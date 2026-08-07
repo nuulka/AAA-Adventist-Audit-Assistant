@@ -275,7 +275,7 @@ if ($type === 'cash') {
 
     $cash_where = implode(' AND ', $cash_clauses);
 
-    $cash_sql = "SELECT T.RECORD_ID, T.CHURCH_ID, T.DATETIME AS bank_date, T.VIA_BANK,
+    $cash_sql = "SELECT T.RECORD_ID, T.CHURCH_ID, T.TYPE AS ots_type, T.DATETIME AS bank_date, T.VIA_BANK,
                         $adj_sql AS bank_amount, T.CASH_DOCUMENT_NUMBER,
                         $desc_sql AS bank_desc
                  FROM TRANSACTIONS T
@@ -563,9 +563,11 @@ if ($type === 'cash') {
                     <tbody>
                         <?php $idx = 1; foreach ($rows as $r): 
                             $is_expense = (float)$r['bank_amount'] < 0;
+                            $is_tithe = (int)($r['ots_type'] ?? 0) === GN_TRANSACTION_TYPE_INCOME;
                             $t_audit_fields = $common_audit_fields;
                             if ($type === 'bank') $t_audit_fields[] = 'bank_in_ots_ok';
-                            $t_audit_fields[] = $is_expense ? 'invoice_ok' : 'tithe_card_ok';
+                            if ($type === 'cash' && $is_tithe) $t_audit_fields[] = 'tithe_card_ok';
+                            if ($is_expense) $t_audit_fields[] = 'invoice_ok';
                             $ok_count = 0;
                             $total_audit = count($t_audit_fields);
                             if ($r['audit_id']) {
@@ -686,7 +688,7 @@ if ($type === 'cash') {
                                 'signature_auditor' => ['Ellenőr aláírása', 'common'],
                                 'stamp_ok' => ['Kiállító bélyegzője / gyülekezet neve', 'common'],
                                 'invoice_ok' => ['Számla megvan', 'expense'],
-                                'tithe_card_ok' => ['Tizedcédula megvan', 'income'],
+                                'tithe_card_ok' => ['Tizedcédula megvan', 'tithe'],
                                 'fund_designation_ok' => ['Alap megjelölés helyes', 'common'],
                                 'supporting_doc_ok' => ['Egyéb melléklet (szerződés, stb.)', 'common'],
                             ];
@@ -764,12 +766,13 @@ function openAudit(id, type) {
         document.querySelector('[name="inspector_name"]').value = data.audit ? data.audit.inspector_name : '<?= htmlspecialchars($_SESSION[GC_USER_FULL_NAME] ?? '', ENT_QUOTES, 'UTF-8') ?>';
         document.querySelector('[name="notes"]').value = data.audit ? data.audit.notes : '';
 
-        // Dinamikus ellenőrző lista a tétel típusa szerint (bevétel / kiadás)
+        // Dinamikus ellenőrző lista a tétel típusa szerint (bevétel / kiadás / tizedcédula)
         var isExpense = Number(data.bank_amount || 0) < 0;
+        var isTithe = type === 'cash' && Number(data.ots_type) === 1;
         document.querySelectorAll('.checklist-item[data-req]').forEach(function(el) {
             var req = el.getAttribute('data-req');
             if (req === 'expense') el.style.display = isExpense ? '' : 'none';
-            else if (req === 'income') el.style.display = isExpense ? 'none' : '';
+            else if (req === 'tithe') el.style.display = isTithe ? '' : 'none';
         });
         var lblReceiver = document.getElementById('lbl_signature_receiver');
         if (lblReceiver) lblReceiver.textContent = isExpense ? 'Felvevő aláírása' : 'Befizető aláírása';

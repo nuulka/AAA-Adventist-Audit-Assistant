@@ -484,7 +484,7 @@ webix.ready(function(){
             { id: "RECORD_ID", header: "", width: 0, hidden: true },
             { id: "actions", header: "", width: 45, template: function(obj) {
                 if (obj.VIA_BANK === 0) {
-                    return "<span class='cash-check-btn' onclick='openCashAudit(" + obj.RECORD_ID + ",\"" + escapeAttr(obj.DATETIME) + "\"," + (obj.SUMAMOUNT || 0) + ",\"" + escapeAttr(obj.RECEIPT_NUMBER || "") + "\",\"" + escapeAttr(obj.DESCRIPTION || "") + "\")' style='cursor:pointer;' title='Készpénz ellenőrzés'>🔍</span>";
+                    return "<span class='cash-check-btn' onclick='openCashAudit(" + obj.RECORD_ID + ",\"" + escapeAttr(obj.DATETIME) + "\"," + (obj.SUMAMOUNT || 0) + ",\"" + escapeAttr(obj.RECEIPT_NUMBER || "") + "\",\"" + escapeAttr(obj.DESCRIPTION || "") + "\"," + (obj.TYPE || 0) + ")' style='cursor:pointer;' title='Készpénz ellenőrzés'>🔍</span>";
                 }
                 return "";
             }, css: { "text-align": "center" } },
@@ -564,17 +564,18 @@ webix.ready(function(){
 });
 
 var _cashAuditRecordId = 0;
-function openCashAudit(recordId, dateStr, amount, docNumber, descText) {
+function openCashAudit(recordId, dateStr, amount, docNumber, descText, txType) {
     _cashAuditRecordId = recordId;
     document.getElementById('ca_record_id').textContent = '#' + recordId;
     document.getElementById('ca_date').textContent = dateStr || '-';
     document.getElementById('ca_amount').textContent = Number(amount).toLocaleString('hu-HU') + ' Ft';
-    // Dinamikus ellenőrző lista a tétel típusa szerint (bevétel / kiadás)
+    // Dinamikus ellenőrző lista a tétel típusa szerint (bevétel / kiadás / tizedcédula)
     var isExpense = Number(amount) < 0;
+    var isTithe = Number(txType) === 1;
     document.querySelectorAll('#ca_checklist .checklist-item[data-req]').forEach(function(el) {
         var req = el.getAttribute('data-req');
         if (req === 'expense') el.style.display = isExpense ? '' : 'none';
-        else if (req === 'income') el.style.display = isExpense ? 'none' : '';
+        else if (req === 'tithe') el.style.display = isTithe ? '' : 'none';
     });
     var lblReceiver = document.getElementById('ca_lbl_signature_receiver');
     if (lblReceiver) lblReceiver.textContent = isExpense ? 'Felvevő aláírása' : 'Befizető aláírása';
@@ -687,7 +688,7 @@ function saveCashAudit() {
                 <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_stamp_ok" value="1"><label class="form-check-label" for="chk_stamp_ok">Kiállító bélyegzője / gyülekezet neve</label></div></div>
                 <div class="checklist-item py-1" data-req="expense"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_invoice_ok" value="1"><label class="form-check-label" for="chk_invoice_ok">Számla megvan</label></div></div>
                 <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_decision_number_ok" value="1"><label class="form-check-label" for="chk_decision_number_ok">Határozati szám</label></div></div>
-                <div class="checklist-item py-1" data-req="income"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_tithe_card_ok" value="1"><label class="form-check-label" for="chk_tithe_card_ok">Tizedcédula megvan</label></div></div>
+                <div class="checklist-item py-1" data-req="tithe"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_tithe_card_ok" value="1"><label class="form-check-label" for="chk_tithe_card_ok">Tizedcédula megvan</label></div></div>
                 <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_fund_designation_ok" value="1"><label class="form-check-label" for="chk_fund_designation_ok">Pénzalap megjelölés helyes</label></div></div>
                 <div class="checklist-item py-1" data-req="common"><div class="form-check"><input class="form-check-input" type="checkbox" id="chk_supporting_doc_ok" value="1"><label class="form-check-label" for="chk_supporting_doc_ok">Egyéb melléklet</label></div></div>
               </div>

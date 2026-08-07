@@ -2779,7 +2779,6 @@ var AUDIT_CHECKLISTS = {
                     { key: 'bank_in_ots_ok', label: 'Banki tétel OTS-ben szerepel', auto: true },
                     { key: 'description_ok', label: 'Pontos-e a megnevezés' },
                     { key: 'decision_number_ok', label: 'Határozatszám' },
-                    { key: 'tithe_card_ok', label: 'Tizedcédula megvan' },
                     { key: 'fund_designation_ok', label: 'Pénzalap megjelölés helyes' },
                     { key: 'signature_receiver', label: 'Befizető aláírása' },
                     { key: 'signature_treasurer', label: 'Pénztáros aláírás' },
@@ -2912,7 +2911,7 @@ function toggleAuditPanel() {
         .then(function(data) {
             // Összes lehetséges mező végigjárása az audit adatokból
             var fields = (_currentItemType === 'bank_income' || _currentItemType === 'bank_expense')
-                ? ['bank_in_ots_ok','description_ok','decision_number_ok','invoice_ok','tithe_card_ok','fund_designation_ok','signature_receiver','signature_treasurer','signature_authorizer','signature_auditor','stamp_ok','supporting_doc_ok','receipt_number_ok']
+                ? ['bank_in_ots_ok','description_ok','decision_number_ok','invoice_ok','fund_designation_ok','signature_receiver','signature_treasurer','signature_authorizer','signature_auditor','stamp_ok','supporting_doc_ok','receipt_number_ok']
                 : ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
             fields.forEach(function(f) {
                 var cb = document.getElementById('chk_' + f);

@@ -37,7 +37,7 @@ if ($type === 'cash') {
 
     // OTS rekord lekérése (készpénz)
     $adj_sql = "IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)";
-    $stmt_ots = $ots_db->prepare("SELECT T.RECORD_ID, T.CHURCH_ID, T.VIA_BANK, $adj_sql AS bank_amount,
+    $stmt_ots = $ots_db->prepare("SELECT T.RECORD_ID, T.CHURCH_ID, T.VIA_BANK, T.TYPE AS ots_type, $adj_sql AS bank_amount,
             T.DATETIME AS bank_date, T.CASH_DOCUMENT_NUMBER AS ots_doc,
             TRIM(CONCAT(
                 IFNULL(CONCAT_WS(' ', p.NAME_PREFIX, p.NAME, p.NAME_SUFFIX), ''),
