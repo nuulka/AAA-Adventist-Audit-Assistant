@@ -248,7 +248,7 @@ $conn->query("CREATE TABLE IF NOT EXISTS audit_checklist (
     FOREIGN KEY (bank_reconciliation_id) REFERENCES bank_reconciliation(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 // ALTER for existing tables that lack the new columns
-$ac_new_cols = ['bank_in_ots_ok','signature_auditor','stamp_ok'];
+$ac_new_cols = ['bank_in_ots_ok','signature_auditor','stamp_ok','tithe_source_asked'];
 foreach ($ac_new_cols as $ac_col) {
     $ac_cols = $conn->query("SHOW COLUMNS FROM audit_checklist LIKE '$ac_col'");
     if (!$ac_cols || $ac_cols->num_rows === 0) {
@@ -2785,6 +2785,7 @@ var AUDIT_CHECKLISTS = {
                     { key: 'signature_authorizer', label: 'Utalványozó/engedélyező' },
                     { key: 'signature_auditor', label: 'Ellenőr aláírása' },
                     { key: 'stamp_ok', label: 'Kiállító bélyegzője / gyülekezet neve' },
+                    { key: 'tithe_source_asked', label: '🔎 Kérdezd meg a pénztárost: milyen dokumentum alapján írta be a tizedcédula jellegű összegeket? (a/ banki közlemény, b/ internetes üzenet, c/ szóbeli, d/ egyéb → írd be a megjegyzésbe)', hidden: true },
                 ]
             }
         ]
@@ -2880,7 +2881,8 @@ function renderAuditChecklist(type) {
             html += '<div class="col-12"><strong style="font-size:12px;" class="text-muted">' + group.heading + '</strong></div>';
         }
         group.fields.forEach(function(field) {
-            html += '<div class="checklist-item py-1 checklist-field" data-key="' + field.key + '">' +
+            var hiddenStyle = field.hidden ? ' style="display:none;"' : '';
+            html += '<div class="checklist-item py-1 checklist-field" data-key="' + field.key + '"' + hiddenStyle + '>' +
                 '<div class="form-check">' +
                 '<input class="form-check-input" type="checkbox" name="' + field.key + '" value="1" id="chk_' + field.key + '">' +
                 '<label class="form-check-label" for="chk_' + field.key + '" style="font-size:13px;">' + field.label + '</label>' +
@@ -2911,12 +2913,15 @@ function toggleAuditPanel() {
         .then(function(data) {
             // Összes lehetséges mező végigjárása az audit adatokból
             var fields = (_currentItemType === 'bank_income' || _currentItemType === 'bank_expense')
-                ? ['bank_in_ots_ok','description_ok','decision_number_ok','invoice_ok','fund_designation_ok','signature_receiver','signature_treasurer','signature_authorizer','signature_auditor','stamp_ok','supporting_doc_ok','receipt_number_ok']
+                ? ['bank_in_ots_ok','description_ok','decision_number_ok','invoice_ok','fund_designation_ok','signature_receiver','signature_treasurer','signature_authorizer','signature_auditor','stamp_ok','supporting_doc_ok','receipt_number_ok','tithe_source_asked']
                 : ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
             fields.forEach(function(f) {
                 var cb = document.getElementById('chk_' + f);
                 if (cb) cb.checked = data.audit && data.audit[f] == 1;
             });
+            // A tizedcédula-forrás feladat csak banki tizedcédulás tételeknél jelenik meg
+            var titheAskField = document.querySelector('#auditChecklistContainer .checklist-field[data-key="tithe_source_asked"]');
+            if (titheAskField) titheAskField.style.display = Number(data.tithe_ask) === 1 ? '' : 'none';
             // Ha a banki tétel párosítva van OTS-ben, a "Banki tétel OTS-ben szerepel" pipa automatikusan
             if (_currentViewingData && (_currentViewingData.ots_record_id || _currentViewingData.item_count > 0)) {
                 var bankInOts = document.getElementById('chk_bank_in_ots_ok');

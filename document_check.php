@@ -1,5 +1,5 @@
 <?php
-$common_audit_fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+$common_audit_fields = ['date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','signature_bookkeeper','signature_issuer','signature_payer','amount_in_words_ok','stamp_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
 $bank_audit_fields = array_merge($common_audit_fields, ['invoice_ok','tithe_card_ok','bank_in_ots_ok']);
 $cash_audit_fields = array_merge($common_audit_fields, ['invoice_ok','tithe_card_ok']);
 ini_set('display_errors', 0);
@@ -69,6 +69,10 @@ $conn->query("CREATE TABLE IF NOT EXISTS ots_cash_audit (
     signature_receiver TINYINT(1) DEFAULT 0,
     signature_authorizer TINYINT(1) DEFAULT 0,
     signature_auditor TINYINT(1) DEFAULT 0,
+    signature_bookkeeper TINYINT(1) DEFAULT 0,
+    signature_issuer TINYINT(1) DEFAULT 0,
+    signature_payer TINYINT(1) DEFAULT 0,
+    amount_in_words_ok TINYINT(1) DEFAULT 0,
     stamp_ok TINYINT(1) DEFAULT 0,
     invoice_ok TINYINT(1) DEFAULT 0,
     tithe_card_ok TINYINT(1) DEFAULT 0,
@@ -80,14 +84,14 @@ $conn->query("CREATE TABLE IF NOT EXISTS ots_cash_audit (
     UNIQUE KEY uk_ots_record (ots_record_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 // ALTER for existing tables that lack the new columns
-$cah_new_cols = ['signature_auditor','stamp_ok'];
+$cah_new_cols = ['signature_auditor','stamp_ok','signature_bookkeeper','signature_issuer','signature_payer','amount_in_words_ok'];
 foreach ($cah_new_cols as $cah_col) {
     $cah_col_res = $conn->query("SHOW COLUMNS FROM ots_cash_audit LIKE '" . $cah_col . "'");
     if (!$cah_col_res || $cah_col_res->num_rows === 0) {
         $conn->query("ALTER TABLE ots_cash_audit ADD COLUMN $cah_col TINYINT(1) DEFAULT 0");
     }
 }
-$ac_new_cols = ['signature_auditor','stamp_ok'];
+$ac_new_cols = ['signature_auditor','stamp_ok','tithe_source_asked','bank_stmt_ok'];
 foreach ($ac_new_cols as $ac_col) {
     $ac_col_res = $conn->query("SHOW COLUMNS FROM audit_checklist LIKE '" . $ac_col . "'");
     if (!$ac_col_res || $ac_col_res->num_rows === 0) {
@@ -112,6 +116,29 @@ $amount_min = isset($_GET['amount_min']) && $_GET['amount_min'] !== '' ? floatva
 $amount_max = isset($_GET['amount_max']) && $_GET['amount_max'] !== '' ? floatval($_GET['amount_max']) : null;
 $direction = isset($_GET['direction']) && in_array($_GET['direction'], ['income', 'expense'], true) ? $_GET['direction'] : '';
 $search_desc = isset($_GET['search_desc']) ? trim((string)$_GET['search_desc']) : '';
+$pending_only = isset($_GET['pending']) && $_GET['pending'] === '1';
+
+// Audit-állapot segédfüggvény: visszaadja a [t_audit_fields, ok_count, total_audit, is_expense, is_tithe] értékeket
+function dc_row_audit_state($r, $type, $common_fields) {
+    $is_expense = (float)$r['bank_amount'] < 0;
+    $is_tithe = (int)($r['ots_type'] ?? 0) === GN_TRANSACTION_TYPE_INCOME;
+    if ($type === 'bank') {
+        $t_audit_fields = ['bank_stmt_ok', 'amount_ok', 'description_ok', 'bank_in_ots_ok', 'fund_designation_ok', 'supporting_doc_ok'];
+        if ($is_expense) { $t_audit_fields[] = 'decision_number_ok'; $t_audit_fields[] = 'invoice_ok'; }
+        if ((int)($r['tithe_ask'] ?? 0) === 1) { $t_audit_fields[] = 'tithe_source_asked'; }
+    } else {
+        $t_audit_fields = $common_fields;
+        if ($is_tithe) $t_audit_fields[] = 'tithe_card_ok';
+        if ($is_expense) $t_audit_fields[] = 'invoice_ok';
+    }
+    $ok_count = 0;
+    if (!empty($r['audit_id'])) {
+        foreach ($t_audit_fields as $f) {
+            if ((int)($r[$f] ?? 0) === 1) $ok_count++;
+        }
+    }
+    return [$t_audit_fields, $ok_count, count($t_audit_fields), $is_expense, $is_tithe];
+}
 
 // AJAX: audit checklist mentése
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'save_audit') {
@@ -132,7 +159,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     } else {
         require_church_access(0); // will fail
     }
-    $fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok','bank_in_ots_ok'];
+    $fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok','bank_in_ots_ok','tithe_source_asked','bank_stmt_ok'];
     $inspector = mb_substr(trim((string)($_POST['inspector_name'] ?? $_SESSION[GC_USER_FULL_NAME] ?? 'Ismeretlen')), 0, 100, 'UTF-8');
     $notes = mb_substr(trim((string)($_POST['notes'] ?? '')), 0, 1000, 'UTF-8');
     $checked_at = date('Y-m-d H:i:s');
@@ -177,7 +204,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     } else {
         require_church_access(0);
     }
-    $caf_fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
+    $caf_fields = ['date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','signature_bookkeeper','signature_issuer','signature_payer','amount_in_words_ok','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok'];
     $inspector = mb_substr(trim((string)($_POST['inspector_name'] ?? $_SESSION[GC_USER_FULL_NAME] ?? 'Ismeretlen')), 0, 100, 'UTF-8');
     $notes = mb_substr(trim((string)($_POST['notes'] ?? '')), 0, 1000, 'UTF-8');
     $checked_at = date('Y-m-d H:i:s');
@@ -366,7 +393,7 @@ if ($type === 'cash') {
                    ac.signature_treasurer, ac.signature_receiver, ac.signature_authorizer,
                    ac.signature_auditor, ac.stamp_ok,
                    ac.invoice_ok, ac.tithe_card_ok, ac.receipt_number_ok, ac.decision_number_ok,
-                    ac.fund_designation_ok, ac.supporting_doc_ok, ac.bank_in_ots_ok, ac.notes
+                    ac.fund_designation_ok, ac.supporting_doc_ok, ac.bank_in_ots_ok, ac.tithe_source_asked, ac.bank_stmt_ok, ac.notes
             FROM bank_reconciliation br
             LEFT JOIN audit_checklist ac ON br.id = ac.bank_reconciliation_id
             WHERE $where_sql
@@ -379,14 +406,112 @@ if ($type === 'cash') {
     } else {
         $result = $conn->query($sql);
     }
+
+    // Tizedcédula-jelleg meghatározása külön, batch-elt lekérdezésekkel az OTS kapcsolaton.
+    // Élesben az OTS adatbázis másik szerveren is lehet, ezért a revizor kapcsolaton nem használható `ots.` prefix.
+    $br_t_has_ask = [];    // reconciliation_id => 1 ha van kért, nem online tized
+    $br_t_has_tithe = [];  // reconciliation_id => 1 ha van tized-jellegű tétel
+    $t_o_online_map = [];  // ots_record_id => max(VIA_ONLINE_GIVING)
     if ($result) {
+        $rows_tmp = [];
+        $rec_ids_all = [];
+        $ots_ids_all = [];
         while ($r = $result->fetch_assoc()) {
             $r['church_name'] = $dc_church_names[$r['church_id']] ?? null;
+            $rows_tmp[] = $r;
+            $rec_ids_all[] = (int)$r['id'];
+            if (!empty($r['ots_record_id'])) { $ots_ids_all[] = (int)$r['ots_record_id']; }
+        }
+        $tithe_type = GN_TRANSACTION_TYPE_INCOME;
+
+        // reconciliation_id => record_id-k (revizor kapcsolat)
+        $rec_records = [];
+        if (!empty($rec_ids_all)) {
+            $r_ph = implode(',', array_fill(0, count($rec_ids_all), '?'));
+            $r_types = str_repeat('i', count($rec_ids_all));
+            $stmt_items = $conn->prepare("SELECT reconciliation_id, record_id FROM bank_reconciliation_items WHERE reconciliation_id IN ($r_ph)");
+            if ($stmt_items) {
+                $stmt_items->bind_param($r_types, ...$rec_ids_all);
+                $stmt_items->execute();
+                $item_res = $stmt_items->get_result();
+                while ($it = $item_res->fetch_assoc()) {
+                    $rec_records[(int)$it['reconciliation_id']][] = (int)$it['record_id'];
+                }
+            }
+        }
+        // record_id-k tized-jellege (OTS kapcsolat)
+        if (!empty($rec_records)) {
+            $all_record_ids = [];
+            foreach ($rec_records as $rids) { foreach ($rids as $rid) { $all_record_ids[$rid] = true; } }
+            $all_record_ids = array_keys($all_record_ids);
+            $o_ph = implode(',', array_fill(0, count($all_record_ids), '?'));
+            $o_types = 'ii' . str_repeat('i', count($all_record_ids));
+            $stmt_ots = $ots_db->prepare("SELECT RECORD_ID,
+                        MAX(CASE WHEN TYPE = ? AND VIA_ONLINE_GIVING = 0 THEN 1 ELSE 0 END) AS has_ask,
+                        MAX(CASE WHEN TYPE = ? THEN 1 ELSE 0 END) AS has_tithe
+                    FROM TRANSACTIONS WHERE RECORD_ID IN ($o_ph) GROUP BY RECORD_ID");
+            if ($stmt_ots) {
+                $bind_params = [$tithe_type, $tithe_type];
+                foreach ($all_record_ids as $rid) { $bind_params[] = $rid; }
+                $stmt_ots->bind_param($o_types, ...$bind_params);
+                $stmt_ots->execute();
+                $t_res = $stmt_ots->get_result();
+                while ($o = $t_res->fetch_assoc()) {
+                    $rid = (int)$o['RECORD_ID'];
+                    if ((int)$o['has_ask'] === 1) {
+                        foreach ($rec_records as $rec_id => $rids) { if (in_array($rid, $rids, true)) { $br_t_has_ask[$rec_id] = 1; } }
+                    }
+                    if ((int)$o['has_tithe'] === 1) {
+                        foreach ($rec_records as $rec_id => $rids) { if (in_array($rid, $rids, true)) { $br_t_has_tithe[$rec_id] = 1; } }
+                    }
+                }
+            }
+        }
+        // ots_record_id online jellege (OTS kapcsolat)
+        if (!empty($ots_ids_all)) {
+            $o_ph = implode(',', array_fill(0, count($ots_ids_all), '?'));
+            $o_types = str_repeat('i', count($ots_ids_all)) . 'i';
+            $stmt_o = $ots_db->prepare("SELECT RECORD_ID, MAX(VIA_ONLINE_GIVING) AS v FROM TRANSACTIONS WHERE RECORD_ID IN ($o_ph) AND TYPE = ? GROUP BY RECORD_ID");
+            if ($stmt_o) {
+                $bind_params = [];
+                foreach ($ots_ids_all as $rid) { $bind_params[] = $rid; }
+                $bind_params[] = $tithe_type;
+                $stmt_o->bind_param($o_types, ...$bind_params);
+                $stmt_o->execute();
+                $o_res = $stmt_o->get_result();
+                while ($o = $o_res->fetch_assoc()) {
+                    $t_o_online_map[(int)$o['RECORD_ID']] = $o['v'];
+                }
+            }
+        }
+        foreach ($rows_tmp as $r) {
+            $rec_id = (int)$r['id'];
+            $ots_rid = !empty($r['ots_record_id']) ? (int)$r['ots_record_id'] : 0;
+            $online_v = $ots_rid ? ($t_o_online_map[$ots_rid] ?? null) : null;
+            $has_single_tithe = ($online_v !== null && $online_v !== '');
+            $has_single_ask = $has_single_tithe && (int)$online_v !== 1;
+            $has_t = (($br_t_has_tithe[$rec_id] ?? 0) === 1) || $has_single_tithe;
+            $has_ask = (($br_t_has_ask[$rec_id] ?? 0) === 1) || $has_single_ask;
+            $r['tithe_ask'] = ($has_t && $has_ask) ? 1 : 0;
             $rows[] = $r;
             $total_count++;
             if ($r['audit_id']) { $checked_count++; }
         }
     }
+}
+
+// Félbehagyott (nem 100%-osan kitöltött) ellenőrzések meghatározása
+$pending_rows = [];
+foreach ($rows as $r) {
+    list($t_fields, $t_ok, $t_total) = dc_row_audit_state($r, $type, $common_audit_fields);
+    if (!empty($r['audit_id']) && $t_ok < $t_total) {
+        $pending_rows[] = $r;
+    }
+}
+if ($pending_only) {
+    $rows = $pending_rows;
+    $total_count = count($rows);
+    $checked_count = 0;
 }
 ?>
 <!DOCTYPE html>
@@ -421,6 +546,14 @@ if ($type === 'cash') {
         .sort-desc::after { content: " ▼"; font-size: 10px; }
         th[onclick] { cursor: pointer; user-select: none; }
         th[onclick]:hover { background: #d0d5dd !important; }
+        .table-responsive { overflow-x: visible; }
+        .table thead th {
+            position: sticky;
+            top: 0;
+            z-index: 5;
+            background: #fff;
+            box-shadow: inset 0 -1px 0 #dee2e6;
+        }
     </style>
 </head>
 <body>
@@ -469,6 +602,49 @@ if ($type === 'cash') {
             </div>
         </div>
     </div>
+
+    <!-- Félbehagyott ellenőrzések panel -->
+    <?php if (!empty($pending_rows)): ?>
+    <div class="card mb-3 border-warning">
+        <div class="card-header py-2 bg-warning-subtle d-flex justify-content-between align-items-center">
+            <span class="fw-bold">⏸ Félbehagyott ellenőrzések (<?= count($pending_rows) ?>)</span>
+            <?php $pending_link_params = $_GET; $pending_link_params['pending'] = '1'; $pending_link_params['type'] = $type; ?>
+            <a href="document_check.php?<?= http_build_query($pending_link_params) ?>" class="btn btn-warning btn-sm py-0 px-2">Csak ezek listázása</a>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-sm table-striped mb-0" style="font-size:13px;">
+                    <thead>
+                        <tr>
+                            <th>Gyülekezet</th>
+                            <th>Dátum</th>
+                            <th style="text-align:right;">Összeg</th>
+                            <th>Közlemény</th>
+                            <th>Megfelelés</th>
+                            <th>Ellenőrizte</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <?php foreach ($pending_rows as $pr):
+                            list($pr_fields, $pr_ok, $pr_total) = dc_row_audit_state($pr, $type, $common_audit_fields);
+                        ?>
+                        <tr>
+                            <td><?= htmlspecialchars($pr['church_name'] ?? '-') ?></td>
+                            <td><?= $pr['bank_date'] ? mb_substr($pr['bank_date'], 0, 10) : '-' ?></td>
+                            <td style="text-align:right;" class="amount-clickable <?= (float)$pr['bank_amount'] < 0 ? 'text-danger' : 'text-success' ?> fw-bold" onclick="showDocDetail(<?= $pr['id'] ?>, '<?= $type ?>')"><?= number_format((float)$pr['bank_amount'], 0, ',', ' ') ?> Ft</td>
+                            <td><?= htmlspecialchars(mb_substr($pr['bank_desc'] ?? '-', 0, 60)) ?></td>
+                            <td><span class="fw-bold text-warning"><?= $pr_ok ?>/<?= $pr_total ?></span></td>
+                            <td><?= htmlspecialchars($pr['inspector_name'] ?? '-') ?></td>
+                            <td><button class="btn btn-outline-primary btn-sm py-0 px-1" onclick="openAudit(<?= $pr['id'] ?>, '<?= $type ?>')" title="Ellenőrzés folytatása">🔍</button></td>
+                        </tr>
+                        <?php endforeach; ?>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <?php endif; ?>
 
     <!-- Szűrők -->
     <div class="card mb-3">
@@ -520,6 +696,13 @@ if ($type === 'cash') {
                     <input type="text" name="search_desc" class="form-control form-control-sm" value="<?= htmlspecialchars($search_desc) ?>" style="width:200px;" placeholder="Keresés a közleményben...">
                 </div>
                 <div class="col-auto">
+                    <label class="small mb-0">Állapot</label>
+                    <select name="pending" class="form-select form-select-sm" style="width:140px;">
+                        <option value="">Mind</option>
+                        <option value="1" <?= $pending_only ? 'selected' : '' ?>>⏸ Félbehagyott</option>
+                    </select>
+                </div>
+                <div class="col-auto">
                     <button type="submit" class="btn btn-primary btn-sm">🔎 Szűrés</button>
                     <a href="document_check.php" class="btn btn-outline-secondary btn-sm">✕</a>
                 </div>
@@ -562,19 +745,9 @@ if ($type === 'cash') {
                     </thead>
                     <tbody>
                         <?php $idx = 1; foreach ($rows as $r): 
-                            $is_expense = (float)$r['bank_amount'] < 0;
-                            $is_tithe = (int)($r['ots_type'] ?? 0) === GN_TRANSACTION_TYPE_INCOME;
-                            $t_audit_fields = $common_audit_fields;
-                            if ($type === 'bank') $t_audit_fields[] = 'bank_in_ots_ok';
-                            if ($type === 'cash' && $is_tithe) $t_audit_fields[] = 'tithe_card_ok';
-                            if ($is_expense) $t_audit_fields[] = 'invoice_ok';
-                            $ok_count = 0;
-                            $total_audit = count($t_audit_fields);
-                            if ($r['audit_id']) {
-                                foreach ($t_audit_fields as $f) { if ((int)$r[$f] === 1) $ok_count++; }
-                            }
+                            list($t_audit_fields, $ok_count, $total_audit, $is_expense, $is_tithe) = dc_row_audit_state($r, $type, $common_audit_fields);
                         ?>
-                        <tr class="<?= $r['audit_id'] ? ($ok_count === $total_audit ? 'table-success' : 'table-warning') : '' ?>">
+                        <tr class="<?= !empty($r['audit_id']) ? ($ok_count === $total_audit ? 'table-success' : 'table-warning') : '' ?>">
                             <td><?= $idx++ ?></td>
                             <td><?= htmlspecialchars($r['church_name'] ?? '-') ?></td>
                             <td><?= $r['bank_date'] ? mb_substr($r['bank_date'], 0, 10) : '-' ?></td>
@@ -582,9 +755,9 @@ if ($type === 'cash') {
                             <td><?= htmlspecialchars(mb_substr($r['bank_desc'] ?? '-', 0, 60)) ?></td>
                             <td><span class="badge bg-<?= $type === 'cash' ? 'info' : ($r['status'] === 'OK' ? 'success' : ($r['status'] === 'UNCHECKED' ? 'secondary' : 'warning')) ?>"><?= $type === 'cash' ? 'KÉSZPÉNZ' : ($r['status'] ?? 'UNCHECKED') ?></span></td>
                             <td><?= htmlspecialchars($r['inspector_name'] ?? '-') ?></td>
-                            <td><?= $r['checked_at'] ? substr($r['checked_at'], 0, 10) : '-' ?></td>
+                            <td><?= !empty($r['checked_at']) ? substr($r['checked_at'], 0, 10) : '-' ?></td>
                             <td>
-                                <?php if ($r['audit_id']): ?>
+                                <?php if (!empty($r['audit_id'])): ?>
                                     <span class="fw-bold <?= $ok_count === $total_audit ? 'text-success' : 'text-warning' ?>" data-sort-value="<?= $total_audit > 0 ? $ok_count / $total_audit : 0 ?>"><?= $ok_count ?>/<?= $total_audit ?></span>
                                     <div class="progress progress-thin"><div class="progress-bar <?= $ok_count === $total_audit ? 'bg-success' : 'bg-warning' ?>" style="width:<?= $total_audit > 0 ? ($ok_count / $total_audit * 100) : 0 ?>%"></div></div>
                                 <?php else: ?>
@@ -640,59 +813,47 @@ if ($type === 'cash') {
 
 <!-- Audit modal -->
 <div class="modal fade" id="auditModal" tabindex="-1">
-    <div class="modal-dialog modal-lg">
+    <div class="modal-dialog modal-xl">
         <div class="modal-content">
-            <div class="modal-header bg-primary text-white">
-                <h6 class="modal-title">📋 Ellenőrző lista</h6>
-                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+            <div class="modal-header bg-primary text-white py-2">
+                <div class="w-100 d-flex align-items-center flex-wrap gap-2">
+                    <h6 class="modal-title mb-0" id="auditModalTitle">📋 Ellenőrző lista</h6>
+                    <div class="flex-grow-1"></div>
+                    <div class="d-flex align-items-center gap-2">
+                        <label class="small text-white-50 mb-0" for="auditInspectorName">Ellenőr neve:</label>
+                        <input type="text" name="inspector_name" id="auditInspectorName" class="form-control form-control-sm" style="min-width:170px" value="<?= htmlspecialchars($_SESSION[GC_USER_FULL_NAME] ?? '') ?>">
+                    </div>
+                    <button class="btn btn-link btn-sm p-0 text-white text-decoration-none d-inline-flex align-items-center gap-1" type="button" data-bs-toggle="collapse" data-bs-target="#auditHelpText" aria-expanded="true" aria-controls="auditHelpText">
+                        <span id="auditHelpArrow" style="transition: transform .2s; display:inline-block; transform: rotate(180deg);">▼</span> 💡 Használati útmutató
+                    </button>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
             </div>
             <div class="modal-body">
-                <div id="auditBankInfo" class="mb-3 p-2 bg-light rounded small"></div>
-                <div class="mb-3 p-2 bg-info-subtle text-dark rounded small">💡 Ha hiányzik, <b>ne</b> pipáld ki; ha megvan, vagy <b>nem szükséges</b>, akkor tegyél egy pipát a kis négyzetbe!</div>
+                <div id="auditBankInfo" class="mb-2 p-2 bg-light rounded small"></div>
+                <div class="collapse show mb-2" id="auditHelpText">
+                    <div class="p-2 bg-info-subtle text-dark rounded small d-flex justify-content-between align-items-center gap-2" style="cursor:pointer;" data-bs-toggle="collapse" data-bs-target="#auditHelpText" aria-expanded="true" aria-controls="auditHelpText" title="Kattints a becsukáshoz">
+                        <span class="text-primary">▲</span>
+                        <span class="text-center">Pipával jelezzük, hogy rendben van. Tehát ha hibás, hiányzik, <b>akkor ne pipáld ki</b>. Akkor tegyél pipát, ha megvan, rendben van, vagy szükségtelen.</span>
+                        <span class="text-primary">▲</span>
+                    </div>
+                </div>
                 <form id="auditForm">
                     <input type="hidden" name="bank_reconciliation_id" id="auditBankRecId" value="">
                     <input type="hidden" name="ots_record_id" id="auditOtsRecId" value="">
                     <input type="hidden" name="csrf_token" value="<?= $_SESSION['csrf_token'] ?>">
                     <div class="row">
-                        <div class="col-md-6">
-                            <h6 class="border-bottom pb-1">💰 Pénztári bizonylatok</h6>
-                            <?php 
-                            $left_items = [
-                                'cash_voucher_ok' => ['Pénztárbizonylat rendben', 'common'],
-                                'date_filled' => ['Dátum kitöltve', 'common'],
-                                'amount_ok' => ['Összeg pontos', 'common'],
-                                'description_ok' => ['Megnevezés pontos', 'common'],
-                                'receipt_number_ok' => ['Bizonylatszám szerepel', 'common'],
-                                'decision_number_ok' => ['Határozati szám (ha releváns)', 'common'],
-                                'bank_in_ots_ok' => ['Banki tétel OTS-ben szerepel', 'bank_only'],
+                        <?php if ($type === 'bank') { ?>
+                        <!-- 📄 Papír dokumentumok -->
+                        <div class="col-md-4">
+                            <div class="audit-panel paper-col">
+                            <h6 class="border-bottom pb-1">📄 Papír dokumentumok</h6>
+                            <?php
+                            $bank_paper_items = [
+                                'invoice_ok' => ['Számla megvan', 'bank_expense'],
+                                'supporting_doc_ok' => ['Egyéb melléklet (szerződés, stb.)', 'bank_always'],
                             ];
-                            foreach ($left_items as $key => $item):
-                                $is_bank_only = $item[1] === 'bank_only';
-                                $data_req = $is_bank_only ? 'common' : $item[1];
-                            ?>
-                            <div class="checklist-item <?= $is_bank_only ? 'bank-only-item' : '' ?>" data-req="<?= $data_req ?>">
-                                <div class="form-check">
-                                    <input class="form-check-input" type="checkbox" name="<?= $key ?>" value="1" id="chk_<?= $key ?>">
-                                    <label class="form-check-label" for="chk_<?= $key ?>"><?= $item[0] ?></label>
-                                </div>
-                            </div>
-                            <?php endforeach; ?>
-                        </div>
-                        <div class="col-md-6">
-                            <h6 class="border-bottom pb-1">✍️ Aláírások / Mellékletek</h6>
-                            <?php 
-                            $right_items = [
-                                'signature_treasurer' => ['Pénztáros aláírás', 'common'],
-                                'signature_receiver' => ['<span id="lbl_signature_receiver">Felvevő aláírása</span>', 'common'],
-                                'signature_authorizer' => ['Utalványozó/engedélyező', 'common'],
-                                'signature_auditor' => ['Ellenőr aláírása', 'common'],
-                                'stamp_ok' => ['Kiállító bélyegzője / gyülekezet neve', 'common'],
-                                'invoice_ok' => ['Számla megvan', 'expense'],
-                                'tithe_card_ok' => ['Tizedcédula megvan', 'tithe'],
-                                'fund_designation_ok' => ['Alap megjelölés helyes', 'common'],
-                                'supporting_doc_ok' => ['Egyéb melléklet (szerződés, stb.)', 'common'],
-                            ];
-                            foreach ($right_items as $key => $item): ?>
+                            foreach ($bank_paper_items as $key => $item): ?>
                             <div class="checklist-item" data-req="<?= $item[1] ?>">
                                 <div class="form-check">
                                     <input class="form-check-input" type="checkbox" name="<?= $key ?>" value="1" id="chk_<?= $key ?>">
@@ -700,11 +861,123 @@ if ($type === 'cash') {
                                 </div>
                             </div>
                             <?php endforeach; ?>
+                            </div>
                         </div>
+                        <!-- 🖥️ OTS-ben ellenőrizni -->
+                        <div class="col-md-4">
+                            <div class="audit-panel ots-col">
+                            <h6 class="border-bottom pb-1">🖥️ OTS-ben ellenőrizni</h6>
+                            <?php
+                            $bank_ots_items = [
+                                'bank_in_ots_ok' => ['Banki tétel OTS-ben szerepel', 'bank_always'],
+                                'fund_designation_ok' => ['Pénzalap megjelölés helyes', 'bank_always'],
+                                'decision_number_ok' => ['Határozat száma (ha releváns)', 'bank_expense'],
+                            ];
+                            foreach ($bank_ots_items as $key => $item): ?>
+                            <div class="checklist-item" data-req="<?= $item[1] ?>">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="<?= $key ?>" value="1" id="chk_<?= $key ?>">
+                                    <label class="form-check-label" for="chk_<?= $key ?>"><?= $item[0] ?></label>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                            </div>
+                        </div>
+                        <!-- 🏦 Bankszámlakivonaton ellenőrizni -->
+                        <div class="col-md-4">
+                            <div class="audit-panel stmt-col">
+                            <h6 class="border-bottom pb-1">🏦 Bankszámlakivonaton ellenőrizni</h6>
+                            <?php
+                            $bank_stmt_items = [
+                                'bank_stmt_ok' => ['Banki kivonaton szerepel a tétel', 'bank_always'],
+                                'amount_ok' => ['Összeg egyezik a banki kivonattal', 'bank_always'],
+                                'description_ok' => ['Közlemény / megnevezés pontos', 'bank_always'],
+                            ];
+                            foreach ($bank_stmt_items as $key => $item): ?>
+                            <div class="checklist-item" data-req="<?= $item[1] ?>">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="<?= $key ?>" value="1" id="chk_<?= $key ?>">
+                                    <label class="form-check-label" for="chk_<?= $key ?>"><?= $item[0] ?></label>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                            </div>
+                        </div>
+                        <?php } else { ?>
+                        <!-- 📄 Papír bizonylaton ellenőrizni -->
+                        <div class="col-md-6">
+                            <div class="audit-panel paper-col">
+                            <h6 class="border-bottom pb-1">📄 Papír bizonylaton ellenőrizni</h6>
+                            <?php
+                            $cash_paper_rows = [
+                                ['date_filled', 'Dátum', 'common', 'stamp_ok', 'Bélyegző/gyülekezet neve', 'common'],
+                                ['signature_issuer', 'Kiállító', 'common', 'signature_receiver', 'Befizető neve', 'common'],
+                                ['signature_auditor', 'Ellenőr', 'common', 'amount_in_words_ok', 'Összeg számmal és betűvel is pontosan kitöltve', 'common'],
+                                ['signature_authorizer', 'Utalványozó', 'common', 'description_ok', 'Megnevezés pontos', 'common'],
+                                ['signature_bookkeeper', 'Könyvelő', 'common', 'decision_number_ok', 'Határozat száma (ha releváns)', 'common'],
+                                ['signature_treasurer', 'Pénztáros', 'common', 'supporting_doc_ok', 'Egyéb melléklet (szerződés, stb.)', 'common'],
+                                [null, null, null, 'signature_payer', 'Befizető aláírása', 'common'],
+                                [null, null, null, 'invoice_ok', 'Mellékletek (számlák)', 'expense'],
+                                [null, null, null, 'tithe_card_ok', 'Mellékletek (tizedcédula esetén)', 'tithe'],
+                            ];
+                            ?>
+                            <div class="paper-sig-grid">
+                                <?php foreach ($cash_paper_rows as $row): ?>
+                                <div class="paper-sig-row">
+                                    <?php if ($row[0]): ?>
+                                    <div class="checklist-item" data-req="<?= $row[2] ?>">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" name="<?= $row[0] ?>" value="1" id="chk_<?= $row[0] ?>">
+                                            <label class="form-check-label" for="chk_<?= $row[0] ?>" id="lbl_<?= $row[0] ?>"><?= $row[1] ?></label>
+                                        </div>
+                                    </div>
+                                    <?php else: ?><div></div><?php endif; ?>
+                                    <?php if ($row[3]): ?>
+                                    <div class="checklist-item" data-req="<?= $row[5] ?>">
+                                        <div class="form-check">
+                                            <input class="form-check-input" type="checkbox" name="<?= $row[3] ?>" value="1" id="chk_<?= $row[3] ?>">
+                                            <label class="form-check-label" for="chk_<?= $row[3] ?>" id="lbl_<?= $row[3] ?>"><?= $row[4] ?></label>
+                                        </div>
+                                    </div>
+                                    <?php else: ?><div></div><?php endif; ?>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+                            </div>
+                        </div>
+                        <!-- 🖥️ OTS-ben ellenőrizni -->
+                        <div class="col-md-6">
+                            <div class="audit-panel ots-col">
+                            <h6 class="border-bottom pb-1">🖥️ OTS-ben ellenőrizni</h6>
+                            <?php
+                            $cash_ots_items = [
+                                'amount_ok' => ['Összeg pontos', 'common'],
+                                'description_ok' => ['Megnevezés pontos', 'common', '_2'],
+                                'receipt_number_ok' => ['Bizonylatszám szerepel', 'common'],
+                                'fund_designation_ok' => ['Pénzalap megjelölés helyes', 'common'],
+                                'decision_number_ok' => ['Határozat száma (ha releváns)', 'common', '_2'],
+                            ];
+                            foreach ($cash_ots_items as $key => $item):
+                                $id_suffix = $item[2] ?? '';
+                            ?>
+                            <div class="checklist-item" data-req="<?= $item[1] ?>">
+                                <div class="form-check">
+                                    <input class="form-check-input" type="checkbox" name="<?= $key ?>" value="1" id="chk_<?= $key . $id_suffix ?>">
+                                    <label class="form-check-label" for="chk_<?= $key . $id_suffix ?>"><?= $item[0] ?></label>
+                                </div>
+                            </div>
+                            <?php endforeach; ?>
+                            </div>
+                        </div>
+                        <?php } ?>
                     </div>
-                    <div class="mt-3">
-                        <label class="form-label small fw-bold">Ellenőr neve</label>
-                        <input type="text" name="inspector_name" class="form-control form-control-sm" value="<?= htmlspecialchars($_SESSION[GC_USER_FULL_NAME] ?? '') ?>">
+                    <div class="mt-2 p-2 rounded bg-warning-subtle border">
+                        <div class="checklist-item" data-req="tithe_ask">
+                            <div class="form-check">
+                                <input class="form-check-input" type="checkbox" name="tithe_source_asked" value="1" id="chk_tithe_source_asked">
+                                <label class="form-check-label" for="chk_tithe_source_asked"><small class="text-danger fw-bold">🔎 Kérdezd meg a pénztárost: milyen dokumentum alapján írta be a tizedcédula jellegű összegeket? (a/ banki közlemény, b/ internetes üzenet, c/ szóbeli, d/ egyéb → írd be a megjegyzésbe)</small></label>
+                            </div>
+                        </div>
                     </div>
                     <div class="mt-2">
                         <label class="form-label small fw-bold">Megjegyzés</label>
@@ -720,6 +993,34 @@ if ($type === 'cash') {
     </div>
 </div>
 
+<style>
+#auditModal .modal-body { padding-top: .5rem; }
+#auditModal .checklist-item { margin-bottom: 2px; }
+#auditModal .checklist-item .form-check-label { font-size: .85rem; }
+#auditModal .checklist-item .form-check { min-height: 1.3rem; margin-bottom: 0; }
+#auditModal h6 { margin-bottom: .35rem; }
+#auditModal .form-check-input { margin-top: .15rem; }
+#auditModal .paper-sig-grid { display: flex; flex-direction: column; }
+#auditModal .paper-sig-row { display: grid; grid-template-columns: 1fr 1fr; column-gap: 1rem; }
+#auditModal .row > div[class*="col-"] { display: flex; flex-direction: column; }
+#auditModal .audit-panel {
+    border-radius: .5rem;
+    padding: .5rem .75rem;
+    height: 100%;
+}
+#auditModal .ots-col {
+    background: #eaf2fb;
+    border: 1px solid #d5e3f4;
+}
+#auditModal .paper-col {
+    background: #fdf9ee;
+    border: 1px solid #f0e4cb;
+}
+#auditModal .stmt-col {
+    background: #f4f6f8;
+    border: 1px solid #e2e7ec;
+}
+</style>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 var CSRF_TOKEN = '<?= $_SESSION['csrf_token'] ?>';
@@ -727,6 +1028,24 @@ var CURRENT_TYPE = '<?= $type ?>';
 var auditModal = null;
 document.addEventListener("DOMContentLoaded", function() {
     auditModal = new bootstrap.Modal(document.getElementById('auditModal'));
+    var syncA = document.getElementById('chk_decision_number_ok');
+    var syncB = document.getElementById('chk_decision_number_ok_2');
+    if (syncA && syncB) {
+        syncA.addEventListener('change', function() { syncB.checked = syncA.checked; });
+        syncB.addEventListener('change', function() { syncA.checked = syncB.checked; });
+    }
+    var syncD = document.getElementById('chk_description_ok');
+    var syncD2 = document.getElementById('chk_description_ok_2');
+    if (syncD && syncD2) {
+        syncD.addEventListener('change', function() { syncD2.checked = syncD.checked; });
+        syncD2.addEventListener('change', function() { syncD.checked = syncD2.checked; });
+    }
+    var helpText = document.getElementById('auditHelpText');
+    var helpArrow = document.getElementById('auditHelpArrow');
+    if (helpText && helpArrow) {
+        helpText.addEventListener('show.bs.collapse', function() { helpArrow.style.transform = 'rotate(180deg)'; });
+        helpText.addEventListener('hide.bs.collapse', function() { helpArrow.style.transform = 'rotate(0deg)'; });
+    }
 });
 
 var _auditData = {};
@@ -745,37 +1064,53 @@ function openAudit(id, type) {
         fetchUrl = 'document_check_get.php?bank_reconciliation_id=' + id;
     }
     
-    // Bank-only checkbox (bank_in_ots_ok) mutatása/elrejtése
-    var bankOnlyItems = document.querySelectorAll('.bank-only-item');
-    bankOnlyItems.forEach(function(el) {
-        el.style.display = type === 'cash' ? 'none' : '';
-    });
-
     // Adatok betöltése
     fetch(fetchUrl)
     .then(function(r) { return r.json(); })
     .then(function(data) {
-        document.getElementById('auditBankInfo').innerHTML = '<strong>' + htmlspecialchars(data.church_name || '-') + '</strong> &middot; ' + htmlspecialchars(data.bank_date || '-') + ' &middot; ' + Number(data.bank_amount).toLocaleString('hu-HU') + ' Ft<br><small>' + htmlspecialchars(data.bank_desc || '') + '</small> &middot; <span class="badge bg-' + (type === 'cash' ? 'info' : (data.status === 'OK' ? 'success' : (data.status === 'UNCHECKED' ? 'secondary' : 'warning'))) + '">' + (type === 'cash' ? 'KÉSZPÉNZ' : htmlspecialchars(data.status || 'UNCHECKED')) + '</span>';
+        document.getElementById('auditBankInfo').innerHTML = '<div class="d-flex flex-wrap align-items-center column-gap-2 row-gap-1">' +
+            '<strong>' + htmlspecialchars(data.church_name || '-') + '</strong>' +
+            '<span class="text-muted">·</span><span>' + htmlspecialchars(data.bank_date || '-') + '</span>' +
+            '<span class="text-muted">·</span><span class="fw-bold">' + Number(data.bank_amount).toLocaleString('hu-HU') + ' Ft</span>' +
+            '<span class="text-muted">·</span><span class="text-truncate" style="min-width:0;max-width:320px;">' + htmlspecialchars(data.bank_desc || '') + '</span>' +
+            '<span class="text-muted">·</span><span class="badge bg-' + (type === 'cash' ? 'info' : (data.status === 'OK' ? 'success' : (data.status === 'UNCHECKED' ? 'secondary' : 'warning'))) + '">' + (type === 'cash' ? 'KÉSZPÉNZ' : htmlspecialchars(data.status || 'UNCHECKED')) + '</span>' +
+        '</div>';
         
         // Checkboxes beállítása
-        var fields = ['cash_voucher_ok','date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','stamp_ok','invoice_ok','tithe_card_ok','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok','bank_in_ots_ok'];
+        var fields = ['date_filled','amount_ok','description_ok','signature_treasurer','signature_receiver','signature_authorizer','signature_auditor','signature_bookkeeper','signature_issuer','signature_payer','amount_in_words_ok','stamp_ok','invoice_ok','tithe_card_ok','tithe_source_asked','receipt_number_ok','decision_number_ok','fund_designation_ok','supporting_doc_ok','bank_in_ots_ok','bank_stmt_ok'];
         fields.forEach(function(f) {
             var cb = document.getElementById('chk_' + f);
             if (cb) cb.checked = data.audit && data.audit[f] == 1;
+            var cb2 = document.getElementById('chk_' + f + '_2');
+            if (cb2) cb2.checked = cb && cb.checked;
         });
         document.querySelector('[name="inspector_name"]').value = data.audit ? data.audit.inspector_name : '<?= htmlspecialchars($_SESSION[GC_USER_FULL_NAME] ?? '', ENT_QUOTES, 'UTF-8') ?>';
         document.querySelector('[name="notes"]').value = data.audit ? data.audit.notes : '';
 
-        // Dinamikus ellenőrző lista a tétel típusa szerint (bevétel / kiadás / tizedcédula)
+        // Dinamikus ellenőrző lista a tétel típusa szerint (bevétel / kiadás / tizedcédula / banki tizedcédula-feladat)
         var isExpense = Number(data.bank_amount || 0) < 0;
+        var titleEl = document.getElementById('auditModalTitle');
+        if (titleEl) titleEl.textContent = type === 'cash' ? (isExpense ? '📋 Kiadási pénztárbizonylat' : '📋 Bevételi pénztárbizonylat') : '📋 Ellenőrző lista';
         var isTithe = type === 'cash' && Number(data.ots_type) === 1;
+        var isTitheAsk = type === 'bank' && Number(data.tithe_ask) === 1;
+        // Kiadási bizonylaton a pénzt átvevő szerepel (nem befizető)
+        if (type === 'cash') {
+            var payerLabels = {
+                'signature_receiver': isExpense ? 'Átvevő neve' : 'Befizető neve',
+                'signature_payer': isExpense ? 'Átvevő aláírása' : 'Befizető aláírása'
+            };
+            Object.keys(payerLabels).forEach(function(k) {
+                var lb = document.getElementById('lbl_' + k);
+                if (lb) lb.textContent = payerLabels[k];
+            });
+        }
         document.querySelectorAll('.checklist-item[data-req]').forEach(function(el) {
             var req = el.getAttribute('data-req');
             if (req === 'expense') el.style.display = isExpense ? '' : 'none';
             else if (req === 'tithe') el.style.display = isTithe ? '' : 'none';
+            else if (req === 'tithe_ask') el.style.display = isTitheAsk ? '' : 'none';
+            else if (req === 'bank_expense') el.style.display = isExpense ? '' : 'none';
         });
-        var lblReceiver = document.getElementById('lbl_signature_receiver');
-        if (lblReceiver) lblReceiver.textContent = isExpense ? 'Felvevő aláírása' : 'Befizető aláírása';
 
         auditModal.show();
     })
@@ -911,6 +1246,10 @@ function renderOtsDetailTable(otsData) {
             '<div id="' + txId + '" class="accordion-collapse collapse ' + (collapsed ? '' : 'show') + '" data-bs-parent="#ddOtsAccordion">' +
                 '<div class="accordion-body p-0 dd-accordion-body">' +
                     '<table class="table table-sm table-striped table-bordered detail-table">';
+
+        if (Number(tx.TYPE) === 1 && Number(tx.VIA_ONLINE_GIVING) === 1) {
+            html += '<tr><th>Tizedcédula:</th><td><span class="badge bg-info">🌐 Online tizedcédula (adakozom.tetkapu.hu)</span></td></tr>';
+        }
 
         var keys = ['DATETIME', 'adjusted_amount', 'ots_desc_full', 'CASH_DOCUMENT_NUMBER', 'DECISION_NUMBER', 'ots_type_name', 'VIA_BANK', 'MODIFIED'];
         var labels = {'DATETIME': 'Dátum', 'adjusted_amount': 'Összeg', 'ots_desc_full': 'Partner / Megjegyzés', 'CASH_DOCUMENT_NUMBER': 'Bizonylatszám', 'DECISION_NUMBER': 'Határozati szám', 'ots_type_name': 'Típus', 'VIA_BANK': 'Banki tranzakció', 'MODIFIED': 'Módosítás ideje'};

@@ -121,7 +121,7 @@ log_activity('page_view', ['page' => 'index']);
                             <small class="text-muted">Tranzakciók kezelése</small>
                         </div>
                     </div>
-                    <p class="text-muted small mb-0">OTS tranzakciók letöltése, feltöltése és szerkesztése.</p>
+                    <p class="text-muted small mb-0">Tranzakciók lekérdezése.</p>
                 </div>
             </a>
         </div>

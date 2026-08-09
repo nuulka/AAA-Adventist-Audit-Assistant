@@ -116,6 +116,41 @@ if ($stmt_ac) {
 
 $row['audit'] = $audit;
 
+// Tizedcédula-jelleg meghatározása (az audit modálhoz is szükséges, detail nélkül is)
+$ots_db = get_ots_conn();
+$tithe_related = false;   // van legalább egy tizedcédulás (TYPE=1) OTS tranzakció
+$tithe_all_online = true; // az összes tizedcédulás tranzakció online-e
+$rec_ids = [];
+$stmt_items2 = $conn->prepare("SELECT record_id FROM bank_reconciliation_items WHERE reconciliation_id = ?");
+if ($stmt_items2) {
+    $stmt_items2->bind_param('i', $bank_id);
+    $stmt_items2->execute();
+    $items_res2 = $stmt_items2->get_result();
+    while ($it = $items_res2->fetch_assoc()) { $rec_ids[] = intval($it['record_id']); }
+}
+if (empty($rec_ids) && !empty($row['ots_record_id'])) { $rec_ids[] = intval($row['ots_record_id']); }
+if (!empty($rec_ids)) {
+    $id_ph = implode(',', array_fill(0, count($rec_ids), '?'));
+    $t_stmt = $ots_db->prepare("SELECT TYPE, VIA_ONLINE_GIVING FROM TRANSACTIONS WHERE RECORD_ID IN ($id_ph)");
+    if ($t_stmt) {
+        $t_types = str_repeat('i', count($rec_ids));
+        $t_stmt->bind_param($t_types, ...$rec_ids);
+        $t_stmt->execute();
+        $t_res = $t_stmt->get_result();
+        $tithe_any = false;
+        while ($o = $t_res->fetch_assoc()) {
+            if ((int)$o['TYPE'] === GN_TRANSACTION_TYPE_INCOME) {
+                $tithe_any = true;
+                if ((int)$o['VIA_ONLINE_GIVING'] !== 1) { $tithe_all_online = false; }
+            }
+        }
+        $tithe_related = $tithe_any;
+        if (!$tithe_any) { $tithe_all_online = false; }
+    }
+}
+$row['tithe_ask'] = ($tithe_related && !$tithe_all_online) ? 1 : 0;
+$row['tithe_online'] = ($tithe_related && $tithe_all_online) ? 1 : 0;
+
 // Ha részletes adatok kellenek (OTS tranzakciók)
 if (isset($_GET['detail'])) {
     $ots_data = null;
