@@ -19,6 +19,9 @@ if (!isset($_SESSION[GC_LOGIN_COOKIE])) {
 require_once __DIR__ . '/lib/bootstrap.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/session.php';
+if (is_file(__DIR__ . '/lib/announcement.php')) {
+    require_once __DIR__ . '/lib/announcement.php';
+}
 build_user_context_from_ots();
 
 // Only admin can view activity log
@@ -120,6 +123,7 @@ $total_pages = max(1, ceil($total / $per_page));
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>AAA – Használati napló</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <style>
         body { background: #f5f7fb; }
         .filter-row { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
@@ -219,13 +223,33 @@ $total_pages = max(1, ceil($total / $per_page));
             <tbody>
                 <?php if (empty($logs)): ?>
                 <tr><td colspan="5" class="text-center text-muted py-4">Nincs naplóbejegyzés.</td></tr>
-                <?php else: foreach ($logs as $log): ?>
+                <?php else: foreach ($logs as $log):
+                    $details_arr = json_decode($log['details'] ?? '', true) ?: [];
+                    $log_link = null;
+                    if ($log['action'] === 'audit_save') {
+                        if (!empty($details_arr['ots_cash_audit'])) {
+                            $log_link = 'document_check.php?type=cash&ots_record_id=' . (int)$details_arr['ots_cash_audit'];
+                        } elseif (!empty($details_arr['bank_reconciliation_id'])) {
+                            $log_link = 'document_check.php?type=bank&bank_reconciliation_id=' . (int)$details_arr['bank_reconciliation_id'];
+                        }
+                    } elseif ($log['action'] === 'unmatch' && !empty($details_arr['bank_reconciliation'])) {
+                        $log_link = 'document_check.php?type=bank&bank_reconciliation_id=' . (int)$details_arr['bank_reconciliation'];
+                    } elseif ($log['action'] === 'save_ots_match' && !empty($details_arr['bank_reconciliation'])) {
+                        $log_link = 'document_check.php?type=bank&bank_reconciliation_id=' . (int)$details_arr['bank_reconciliation'];
+                    } elseif (in_array($log['action'], ['church_note_add', 'church_note_update', 'church_note_delete'], true)) {
+                        $nid = (int)($details_arr['note_id'] ?? 0);
+                        if ($nid > 0) { $log_link = 'church_notes.php?note_id=' . $nid; }
+                    }
+                ?>
                 <tr>
                     <td class="text-nowrap small"><?= htmlspecialchars($log['created_at']) ?></td>
                     <td><?= htmlspecialchars($log['user_name']) ?> <small class="text-muted">(#<?= (int)$log['user_id'] ?>)</small></td>
                     <td><span class="badge bg-<?= $log['action'] === 'login' ? 'success' : ($log['action'] === 'logout' ? 'secondary' : ($log['action'] === 'page_view' ? 'info' : ($log['action'] === 'audit_save' ? 'warning' : 'primary'))) ?>"><?= htmlspecialchars($log['action']) ?></span></td>
                     <td class="text-muted small"><?= htmlspecialchars($log['ip_address'] ?? '-') ?></td>
                     <td style="max-width:300px;">
+                        <?php if ($log_link): ?>
+                        <a href="#" class="btn btn-outline-primary btn-sm py-0 px-1 mb-1" title="Megnyitás a bizonylat ellenőrzésben" onclick="openLogDetail('<?= htmlspecialchars($log_link, ENT_QUOTES, 'UTF-8') ?>'); return false;">🔍 Megtekintés</a>
+                        <?php endif; ?>
                         <?php if ($log['details'] && $log['details'] !== 'null'): ?>
                         <pre class="details-pre"><?= htmlspecialchars(json_encode(json_decode($log['details'], true) ?: $log['details'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)) ?></pre>
                         <?php else: ?>
@@ -238,5 +262,36 @@ $total_pages = max(1, ceil($total / $per_page));
         </table>
     </div>
 </div>
+
+<!-- Bizonylat részlet modal (a Napló oldalon maradunk) -->
+<div class="modal fade" id="logDetailModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header bg-dark text-white py-2">
+        <h6 class="modal-title">🔍 Bizonylat ellenőrzés</h6>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Bezárás"></button>
+      </div>
+      <div class="modal-body p-0">
+        <iframe id="logDetailFrame" src="about:blank" style="width:100%;height:75vh;border:0;"></iframe>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+function openLogDetail(url) {
+    var frame = document.getElementById('logDetailFrame');
+    frame.src = url;
+    new bootstrap.Modal(document.getElementById('logDetailModal')).show();
+}
+document.addEventListener('DOMContentLoaded', function() {
+    var m = document.getElementById('logDetailModal');
+    if (m) m.addEventListener('hidden.bs.modal', function() {
+        document.getElementById('logDetailFrame').src = 'about:blank';
+    });
+});
+</script>
+
+<?php if (function_exists('render_announcement_modal')) render_announcement_modal(); ?>
+
 </body>
 </html>

@@ -20,6 +20,9 @@ if (!isset($_SESSION[GC_LOGIN_COOKIE])) {
 require_once __DIR__ . '/lib/bootstrap.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/session.php';
+if (is_file(__DIR__ . '/lib/announcement.php')) {
+    require_once __DIR__ . '/lib/announcement.php';
+}
 build_user_context_from_ots();
 require_selected_church('index.php');
 
@@ -110,6 +113,20 @@ log_activity('page_view', ['page' => 'index']);
                 </div>
             </a>
         </div>
+        <div class="col-md-4">
+            <a href="admin_message.php" class="card-link">
+                <div class="card p-4 h-100">
+                    <div class="d-flex align-items-center gap-3 mb-3">
+                        <div class="icon-circle bg-primary bg-opacity-10 text-primary">📢</div>
+                        <div>
+                            <h5 class="mb-0">Üzenő</h5>
+                            <small class="text-muted">Belépéskori üzenet</small>
+                        </div>
+                    </div>
+                    <p class="text-muted small mb-0">Üzenet szerkesztése, amit minden bejelentkezett revizor felugró ablakban lát.</p>
+                </div>
+            </a>
+        </div>
         <?php endif; ?>
         <div class="col-md-4">
             <a href="all_transactions/all_transactions_multi.php" class="card-link">
@@ -164,6 +181,20 @@ log_activity('page_view', ['page' => 'index']);
                         </div>
                     </div>
                     <p class="text-muted small mb-0">Banki tételek dokumentum ellenőrzése: bizonylatok, aláírások, mellékletek megléte.</p>
+                </div>
+            </a>
+        </div>
+        <div class="col-md-4">
+            <a href="church_notes.php" class="card-link">
+                <div class="card p-4 h-100">
+                    <div class="d-flex align-items-center gap-3 mb-3">
+                        <div class="icon-circle bg-warning bg-opacity-10 text-warning">📝</div>
+                        <div>
+                            <h5 class="mb-0">Jegyzetek</h5>
+                            <small class="text-muted">Gyülekezeti jegyzetek</small>
+                        </div>
+                    </div>
+                    <p class="text-muted small mb-0">Gyülekezethez kötött, tételtől független jegyzetek tag-ekkel, kereshető felületen.</p>
                 </div>
             </a>
         </div>
@@ -248,6 +279,8 @@ setInterval(() => {
     }
 }, 1000);
 </script>
+
+<?php if (function_exists('render_announcement_modal')) render_announcement_modal(); ?>
 
 </body>
 </html>

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/bootstrap.php';
+require_once __DIR__ . '/prefs.php';
 // OTS constants live outside the revizor directory (../ots). From lib/ we need to go up two levels.
 require_once __DIR__ . '/../../ots/constant.php';
 
@@ -132,10 +133,26 @@ function require_church_access($church_id) {
     return true;
 }
 
+/**
+ * A kiválasztott gyülekezet ID: session, majd (hiány esetén) a 7 napos prefs.
+ * Adminoknál is használható (a require_selected_church csak nem-adminoknál).
+ */
+function get_selected_church_id() {
+    $sel = intval($_SESSION['revizor_selected_church'] ?? 0);
+    if ($sel > 0) return $sel;
+    $pref = intval(get_user_pref('selected_church'));
+    if ($pref > 0) {
+        set_selected_church_session($pref);
+        return $pref;
+    }
+    return 0;
+}
+
 function set_selected_church_session($church_id) {
     $church_id = intval($church_id);
     if ($church_id <= 0) return;
     $_SESSION['revizor_selected_church'] = $church_id;
+    set_user_pref('selected_church', (string)$church_id);
     // Először konfigból próbáljuk a nevet
     $cfg = load_app_config();
     if (!empty($cfg['churches'][$church_id])) {
@@ -169,6 +186,14 @@ function require_selected_church($redirect = 'index.php') {
     }
 
     $selected = intval($_SESSION['revizor_selected_church'] ?? 0);
+    if ($selected <= 0) {
+        // Session nincs beállítva, de talán a 7 napos preferencia megvan
+        $pref = intval(get_user_pref('selected_church'));
+        if ($pref > 0 && in_array($pref, $allowed, true)) {
+            $selected = $pref;
+            set_selected_church_session($selected);
+        }
+    }
     if ($selected > 0 && in_array($selected, $allowed, true)) {
         if (empty($_SESSION['revizor_selected_church_name'])) {
             set_selected_church_session($selected);

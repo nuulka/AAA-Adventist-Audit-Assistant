@@ -23,6 +23,9 @@ if (!isset($_SESSION[GC_LOGIN_COOKIE])) {
 require_once __DIR__ . '/lib/bootstrap.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/session.php';
+if (is_file(__DIR__ . '/lib/announcement.php')) {
+    require_once __DIR__ . '/lib/announcement.php';
+}
 $is_admin = is_admin();
 
 
@@ -395,7 +398,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($bad_ratio > 0.3 && !$force) {
                     $bad_list = '';
                     foreach (array_slice($invalid_accounts, 0, 20) as $inv) {
-                        $bad_list .= "{$inv['line']}. sor: '{$inv['raw']}' ({$inv['digits']} számjegy), {$inv['date']}, {$inv['amount']} Ft<br>";
+                        $bad_list .= "{$inv['line']}. sor: '" . htmlspecialchars($inv['raw'], ENT_QUOTES, 'UTF-8') . "' (" . intval($inv['digits']) . " számjegy), " . htmlspecialchars($inv['date'], ENT_QUOTES, 'UTF-8') . ", " . htmlspecialchars((string)$inv['amount'], ENT_QUOTES, 'UTF-8') . " Ft<br>";
                     }
                     if (count($invalid_accounts) > 20) {
                         $bad_list .= '... és további ' . (count($invalid_accounts) - 20) . ' sor<br>';
@@ -568,7 +571,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $message = "<div class='alert alert-success'>Beolvasva: <strong>$inserted_rows</strong>, Átugorva: <strong>$skipped_rows</strong> (Duplikált: $duplicate_count) tétel. Automatikusan párosítva (OK): <strong>$auto_matched</strong>.</div>";
                 } catch (Exception $e) {
                     $conn->rollback();
-                    $message = "<div class='alert alert-danger'>Hiba: " . $e->getMessage() . "</div>";
+                    $message = "<div class='alert alert-danger'>Hiba történt a feldolgozás során.</div>";
                 }
             }
         }
@@ -721,7 +724,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $message = "<div class='alert alert-success'>Többes feltöltés kész. Beolvasva: <strong>$inserted_rows</strong> tétel.<br><small>Már korábban feltöltött (duplikált): $duplicate_count.</small></div>";
                     } catch (Exception $e) {
                         $conn->rollback();
-                        $message = "<div class='alert alert-danger'>Hiba: " . $e->getMessage() . "</div>";
+                        $message = "<div class='alert alert-danger'>Hiba történt a feldolgozás során.</div>";
                     }
             }
         }
@@ -1649,5 +1652,8 @@ document.querySelectorAll('form[action="upload.php"]').forEach(function(f) {
 </script>
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+
+<?php if (function_exists('render_announcement_modal')) render_announcement_modal(); ?>
+
 </body>
 </html>

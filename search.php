@@ -20,6 +20,9 @@ if (!isset($_SESSION[GC_LOGIN_COOKIE])) {
 require_once __DIR__ . '/lib/bootstrap.php';
 require_once __DIR__ . '/lib/auth.php';
 require_once __DIR__ . '/lib/session.php';
+if (is_file(__DIR__ . '/lib/announcement.php')) {
+    require_once __DIR__ . '/lib/announcement.php';
+}
 build_user_context_from_ots();
 $accessible_church_ids = get_accessible_church_ids();
 
@@ -89,7 +92,7 @@ if (is_admin()) {
             unset($_SESSION['revizor_selected_church'], $_SESSION['revizor_selected_church_name']);
         }
     } else {
-        $church_id = intval($_SESSION['revizor_selected_church'] ?? 0);
+        $church_id = get_selected_church_id();
     }
 } else {
     $church_id = require_selected_church('search.php');
@@ -102,6 +105,18 @@ $amount_min = isset($_GET['amount_min']) && $_GET['amount_min'] !== '' ? floatva
 $amount_max = isset($_GET['amount_max']) && $_GET['amount_max'] !== '' ? floatval($_GET['amount_max']) : null;
 $date_from_input = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
 $date_to_input = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
+
+// A vizsgált időszak megőrzése 1 hétig: ha a keresőben megadjuk, elmentjük;
+// ha nincs megadva, az utolsó beállítást használjuk.
+if (isset($_GET['date_from']) || isset($_GET['date_to'])) {
+    set_user_pref('search_date_from', $date_from_input);
+    set_user_pref('search_date_to', $date_to_input);
+} else {
+    if ($date_from_input === '' && $date_to_input === '') {
+        $date_from_input = get_user_pref('search_date_from');
+        $date_to_input = get_user_pref('search_date_to');
+    }
+}
 $description = isset($_GET['description']) ? trim($_GET['description']) : '';
 $doc_number = isset($_GET['doc_number']) ? trim($_GET['doc_number']) : '';
 $flow = isset($_GET['flow']) ? $_GET['flow'] : 'bank';
@@ -569,7 +584,7 @@ try {
 
     $query_time = round((microtime(true) - $start_time) * 1000);
 } catch (Exception $e) {
-    $error_msg = 'Lekérdezési hiba: ' . $e->getMessage();
+    $error_msg = 'Lekérdezési hiba történt.';
     $query_time = round((microtime(true) - $start_time) * 1000);
 }
 }
@@ -1106,6 +1121,8 @@ setInterval(() => {
     }
 }, 1000);
 </script>
+
+<?php if (function_exists('render_announcement_modal')) render_announcement_modal(); ?>
 
 </body>
 </html>

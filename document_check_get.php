@@ -10,9 +10,146 @@ if (!isset($_SESSION[GC_LOGIN_COOKIE])) { header('Content-Type: application/json
 require_once __DIR__ . '/lib/bootstrap.php';
 require_once __DIR__ . '/lib/auth.php';
 
+// Csak revizor (SDA_L_AUDITOR) vagy admin használhatja a végpontot
+if (!is_admin() && !is_revizor()) {
+    header('Content-Type: application/json'); echo json_encode(['error' => 'Nincs jogosultságod']); exit;
+}
+
 $conn = get_revizor_conn();
 if ($conn->connect_error) { header('Content-Type: application/json'); echo json_encode(['error' => 'DB hiba']); exit; }
 $conn->set_charset("utf8mb4");
+
+// Segédfüggvények: szombati bizonylat-csoport (3 tétel) + önellenőrzés heti adatainak kinyerése.
+// Ugyanazt a heti besorolást követi, mint az OTS Időszaki pénztárjelentője (hónap n-edik szombatja).
+function dc_saturday_count_in_month($year, $month) {
+    $first = new DateTime(sprintf('%04d-%02d-01', $year, $month));
+    $last = clone $first;
+    $first->modify('first saturday of this month');
+    $last->modify('last saturday of this month');
+    return $first->diff($last)->days < 23 ? 4 : 5;
+}
+
+function dc_nth_saturday($year, $month, $n) {
+    static $ordinals = array('first', 'second', 'third', 'fourth', 'fifth');
+    $d = new DateTime(sprintf('%04d-%02d-01', $year, $month));
+    $d->modify($ordinals[$n - 1] . ' saturday of this month');
+    return $d->format('Y-m-d');
+}
+
+function dc_sabbath_week_index($datetime_str) {
+    $dt = DateTime::createFromFormat('Y-m-d', substr((string)$datetime_str, 0, 10));
+    if (!$dt || (int)$dt->format('w') !== 6) return null;
+    $year = (int)$dt->format('Y');
+    $month = (int)$dt->format('n');
+    $cnt = dc_saturday_count_in_month($year, $month);
+    for ($i = 1; $i <= $cnt; $i++) {
+        if (dc_nth_saturday($year, $month, $i) === $dt->format('Y-m-d')) {
+            return array('year' => $year, 'month' => $month, 'week' => $i, 'date' => $dt->format('Y-m-d'));
+        }
+    }
+    return null;
+}
+
+// Belső átvezetés felismerése a megnevezés alapján: ilyen tételről nem készül
+// kiadási/bevételi pénztárbizonylat (csak alapok közötti átcsoportosítás).
+function dc_is_transfer($desc) {
+    $d = mb_strtolower(trim((string)$desc));
+    if ($d === '') { return false; }
+    return (bool)preg_match('/(átvezet|alaphoz|alapra|alapba|alapokba)/u', $d);
+}
+
+function dc_build_sabbath_group($ots_db, $church_id, $datetime_str) {
+    $wk = dc_sabbath_week_index($datetime_str);
+    if ($wk === null) return null;
+    $day_from = $wk['date'] . ' 00:00:00';
+    $day_to = $wk['date'] . ' 23:59:59';
+
+    // Az adott szombati nap készpénz tételei típusonként (ez a papír bizonylat 3 sora)
+    $by_type = array();
+    $rec_id_by_type = array();
+    $stmt = $ots_db->prepare(
+        "SELECT TYPE, IFNULL(SUM(AMOUNT), 0) AS TOTAL, MIN(RECORD_ID) AS REC_ID
+         FROM TRANSACTIONS
+         WHERE CHURCH_ID = ? AND DATETIME BETWEEN ? AND ? AND VIA_BANK = 0 AND IFNULL(VIA_ONLINE_GIVING, 0) = 0 AND AMOUNT > 0
+         GROUP BY TYPE");
+    if ($stmt) {
+        $stmt->bind_param('iss', $church_id, $day_from, $day_to);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        while ($g = $res->fetch_assoc()) {
+            $by_type[(int)$g['TYPE']] = (float)$g['TOTAL'];
+            $rec_id_by_type[(int)$g['TYPE']] = (int)$g['REC_ID'];
+        }
+    }
+
+    // Önellenőrzés: heti tizedboríték összeg és bizonylatszám (MONTHLY_CHURCH_DATA)
+    $mcd = null;
+    $mcd_stmt = $ots_db->prepare(
+        "SELECT TITHE_WEEK" . (int)$wk['week'] . " AS TITHE_WEEK,
+                TITHE_BANK_WEEK" . (int)$wk['week'] . " AS TITHE_BANK_WEEK,
+                TITHE_CASH_DOCUMENT_NUMBER_WEEK" . (int)$wk['week'] . " AS DOC_NUM
+         FROM MONTHLY_CHURCH_DATA
+         WHERE CHURCH_ID = ? AND YEAR = ? AND MONTH = ?
+         LIMIT 1");
+    if ($mcd_stmt) {
+        $mcd_stmt->bind_param('iii', $church_id, $wk['year'], $wk['month']);
+        $mcd_stmt->execute();
+        $mcd_res = $mcd_stmt->get_result();
+        if ($mcd_res && $mcd_res->num_rows > 0) { $mcd = $mcd_res->fetch_assoc(); }
+    }
+
+    // A tized sor az időszaki pénztárjelentő forrásából jön (önellenőrzés TITHE_WEEK),
+    // mint a periodic_report_dt.php "Adakozás tizedcéduláról" sora; a kosár sorok a TRANSACTIONS-ból.
+    $tithe_from_on = $mcd ? (float)$mcd['TITHE_WEEK'] : null;
+
+    // Adakozási naptár (special target): a szombat délelőtti adakozás automatikus átkönyvelésekor
+    // a "Szombat de." kosár helyett ezzel a típussal jelenik meg az adott napra megjelölt cél.
+    // Ugyanaz a forrás, mint a periodic_report_dt.php "adakozási naptár" sora.
+    $special_target = $by_type[GN_TRANSACTION_TYPE_SPECIAL_TARGET] ?? 0;
+    $special_target_purpose = '';
+    if ($special_target > 0) {
+        $stc_stmt = $ots_db->prepare("SELECT PURPOSE FROM SPECIAL_TARGET_CALENDAR WHERE D_DATE = ? LIMIT 1");
+        if ($stc_stmt) {
+            $stc_stmt->bind_param('s', $wk['date']);
+            $stc_stmt->execute();
+            $stc_res = $stc_stmt->get_result();
+            if ($stc_res && $stc_res->num_rows > 0) {
+                $stc_row = $stc_res->fetch_assoc();
+                $special_target_purpose = (string)($stc_row['PURPOSE'] ?? '');
+            }
+        }
+    }
+
+    $group = array(
+        'date' => $wk['date'],
+        'week' => $wk['week'],
+        'saturday_morning' => $by_type[GN_TRANSACTION_TYPE_SATURDAY_MORNING] ?? 0,
+        'sabbath_school' => $by_type[GN_TRANSACTION_TYPE_SABBATH_SCHOOL] ?? 0,
+        'special_target' => $special_target,
+        'special_target_purpose' => $special_target_purpose,
+        'tithe_envelope' => $tithe_from_on !== null ? $tithe_from_on : ($by_type[GN_TRANSACTION_TYPE_INCOME] ?? 0),
+        'tithe_cash_transactions' => $by_type[GN_TRANSACTION_TYPE_INCOME] ?? 0,
+        'onellenorzes' => null,
+    );
+    // A kosár sorok reprezentatív OTS rekord-azonosítója (a nagyító link célja)
+    if (isset($rec_id_by_type[GN_TRANSACTION_TYPE_SATURDAY_MORNING])) {
+        $group['saturday_morning_rec_id'] = $rec_id_by_type[GN_TRANSACTION_TYPE_SATURDAY_MORNING];
+    }
+    if (isset($rec_id_by_type[GN_TRANSACTION_TYPE_SABBATH_SCHOOL])) {
+        $group['sabbath_school_rec_id'] = $rec_id_by_type[GN_TRANSACTION_TYPE_SABBATH_SCHOOL];
+    }
+    if (isset($rec_id_by_type[GN_TRANSACTION_TYPE_SPECIAL_TARGET])) {
+        $group['special_target_rec_id'] = $rec_id_by_type[GN_TRANSACTION_TYPE_SPECIAL_TARGET];
+    }
+    if ($mcd) {
+        $group['onellenorzes'] = array(
+            'tithe_week' => (float)$mcd['TITHE_WEEK'],
+            'tithe_bank_week' => (float)$mcd['TITHE_BANK_WEEK'],
+            'doc_number' => (string)$mcd['DOC_NUM'],
+        );
+    }
+    return $group;
+}
 
 $type = isset($_GET['type']) && $_GET['type'] === 'cash' ? 'cash' : 'bank';
 
@@ -35,10 +172,15 @@ if ($type === 'cash') {
     $exp_types_str = implode(',', array_map('intval', array_filter($exp_types, 'is_numeric')));
     if (empty($exp_types_str)) { $exp_types_str = '-1'; }
 
-    // OTS rekord lekérése (készpénz)
+    // OTS rekord lekérése (készpénz): a RECORD_ID-hoz tartozó ÖSSZES sor.
+    // Egy rekord több pénzalapra széthúzva is megjelenhet (pl. kiadás több alapról),
+    // ezért nem az egyik sort, hanem a teljes csoportot adjuk vissza.
     $adj_sql = "IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)";
     $stmt_ots = $ots_db->prepare("SELECT T.RECORD_ID, T.CHURCH_ID, T.VIA_BANK, T.TYPE AS ots_type, $adj_sql AS bank_amount,
+            T.PERSON_ID AS ots_person_id,
+            TRIM(CONCAT_WS(' ', p.NAME_PREFIX, p.NAME, p.NAME_SUFFIX)) AS ots_person_name,
             T.DATETIME AS bank_date, T.CASH_DOCUMENT_NUMBER AS ots_doc,
+            T.DECISION_NUMBER, T.MODIFIED, T.EDITED_BY, T.FUND_ID,
             TRIM(CONCAT(
                 IFNULL(CONCAT_WS(' ', p.NAME_PREFIX, p.NAME, p.NAME_SUFFIX), ''),
                 ' ', IFNULL(nt1.NAME, ''), ' ', IFNULL(nt2.NAME, '')
@@ -53,13 +195,47 @@ if ($type === 'cash') {
      LEFT JOIN TRANSACTION_TYPE tt ON T.TYPE = tt.id
      LEFT JOIN USERS u ON T.EDITED_BY = u.id
      LEFT JOIN FUNDS funds ON T.FUND_ID = funds.id
-     WHERE T.RECORD_ID = ?");
+     WHERE T.RECORD_ID = ?
+     ORDER BY T.TYPE, T.FUND_ID");
     if (!$stmt_ots) { header('Content-Type: application/json'); echo json_encode(['error' => 'DB hiba']); exit; }
     $stmt_ots->bind_param('i', $ots_record_id);
     $stmt_ots->execute();
     $ots_res = $stmt_ots->get_result();
     if ($ots_res->num_rows === 0) { header('Content-Type: application/json'); echo json_encode(['error' => 'Nem található']); exit; }
-    $row = $ots_res->fetch_assoc();
+    $group_rows = [];
+    $total_amount = 0.0;
+    while ($gr = $ots_res->fetch_assoc()) {
+        $group_rows[] = $gr;
+        $total_amount += (float)$gr['bank_amount'];
+    }
+    // Elsődleges sor: a legnagyobb |összeg| (a fejléc és a részlet ehhez kötődik),
+    // a bank_amount viszont a teljes csoport összege, hogy a lista és a részlet egyezzen.
+    usort($group_rows, function($a, $b) { return abs((float)$b['bank_amount']) <=> abs((float)$a['bank_amount']); });
+    $row = $group_rows[0];
+    $row['bank_amount'] = $total_amount;
+    $row['amount_count'] = count($group_rows);
+    $row['show_amount_group'] = count($group_rows) > 1 ? 1 : 0;
+    $row['amount_group'] = array_map(function($gr) {
+        return array(
+            'rec_id' => (int)$gr['RECORD_ID'],
+            'fund_id' => isset($gr['FUND_ID']) ? (int)$gr['FUND_ID'] : null,
+            'fund_name' => $gr['fund_name'],
+            'type_name' => $gr['ots_type_name'],
+            'desc' => $gr['bank_desc'],
+            'doc' => $gr['ots_doc'],
+            'date' => mb_substr((string)$gr['bank_date'], 0, 10),
+            'amount' => (float)$gr['bank_amount'],
+        );
+    }, $group_rows);
+    // Üres megnevezésnél a pénzalapok listája (több tétel esetén)
+    if (trim((string)$row['bank_desc']) === '') {
+        $funds = array();
+        foreach ($group_rows as $gr) {
+            if (!empty($gr['fund_name']) && !in_array($gr['fund_name'], $funds, true)) { $funds[] = $gr['fund_name']; }
+        }
+        if (!empty($funds)) { $row['bank_desc'] = implode(', ', $funds); }
+    }
+    $row['is_transfer'] = dc_is_transfer($row['bank_desc']) ? 1 : 0;
     $church_id = intval($row['CHURCH_ID'] ?? 0);
     $row['id'] = $row['RECORD_ID'];
     $row['status'] = '-';
@@ -78,6 +254,23 @@ if ($type === 'cash') {
         if ($audit_res && $audit_res->num_rows > 0) { $audit = $audit_res->fetch_assoc(); }
     }
     $row['audit'] = $audit;
+
+    // Szombati bizonylat-csoport: az adott nap 3 tételének összege + önellenőrzés heti adatai
+    $row['sabbath_group'] = dc_build_sabbath_group($ots_db, $church_id, $row['bank_date']);
+
+    // A szombat-csoport panel a papír bizonylat soraihoz (kosár, szombatiskola, tized)
+    // kötődik: szombati készpénztétel, aminek nincs valódi partnernelve.
+    // A neves tizedcédulák (pl. Dantos János) nem jelenítik meg a csoportot.
+    $row['show_sabbath_group'] = 0;
+    $person_name = mb_strtolower(trim((string)($row['ots_person_name'] ?? '')));
+    $anon_names = array('névtelen', 'nevtelen', 'anonim', 'név nélkül', 'név nélkül anonim', 'névtelenül');
+    $no_real_partner = empty($row['ots_person_id']) || in_array($person_name, $anon_names, true);
+    if ((float)$row['bank_amount'] > 0
+        && !empty($row['sabbath_group'])
+        && in_array((int)$row['ots_type'], array(GN_TRANSACTION_TYPE_INCOME, GN_TRANSACTION_TYPE_SABBATH_SCHOOL, GN_TRANSACTION_TYPE_SATURDAY_MORNING, GN_TRANSACTION_TYPE_SPECIAL_TARGET), true)
+        && $no_real_partner) {
+        $row['show_sabbath_group'] = 1;
+    }
 
     header('Content-Type: application/json');
     echo json_encode($row);
@@ -150,6 +343,20 @@ if (!empty($rec_ids)) {
 }
 $row['tithe_ask'] = ($tithe_related && !$tithe_all_online) ? 1 : 0;
 $row['tithe_online'] = ($tithe_related && $tithe_all_online) ? 1 : 0;
+
+// Összevont könyvelés: több banki tétel → ugyanaz az OTS tétel
+$row['agg_count'] = 0;
+$row['agg_group'] = [];
+if (!empty($row['ots_record_id'])) {
+    $stmt_agg = $conn->prepare("SELECT id, bank_date, bank_amount, bank_desc FROM bank_reconciliation WHERE ots_record_id = ? AND church_id = ? ORDER BY bank_date, id");
+    if ($stmt_agg) {
+        $stmt_agg->bind_param('ii', $row['ots_record_id'], $church_id);
+        $stmt_agg->execute();
+        $agg_res = $stmt_agg->get_result();
+        while ($ag = $agg_res->fetch_assoc()) { $row['agg_group'][] = $ag; }
+        $row['agg_count'] = count($row['agg_group']);
+    }
+}
 
 // Ha részletes adatok kellenek (OTS tranzakciók)
 if (isset($_GET['detail'])) {

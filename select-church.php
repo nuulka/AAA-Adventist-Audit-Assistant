@@ -110,7 +110,6 @@ if (empty($churches)) {
     if (!empty($accessible) && is_array($accessible)) {
         $err_msg .= ' (OTS user_id: ' . intval($_SESSION[GN_USER_ID] ?? 0) . ', elérhető ID-k: ' . implode(',', $accessible) . ')';
     }
-    $err_msg .= ' | MySQL error: ' . ($ots->error ?? 'n/a') . ' | próbált táblák: ' . implode(', ', $table_candidates);
     ?><!DOCTYPE html><html lang="hu"><head><meta charset="UTF-8"><title>Hiba – Revizor</title><link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"></head><body><div class="container mt-5"><div class="alert alert-danger"><h5>⚠️ Hiba</h5><p><?= htmlspecialchars($err_msg) ?></p><a href="logout.php" class="btn btn-outline-secondary">Kijelentkezés</a></div></div></body></html><?php
     exit;
 }
