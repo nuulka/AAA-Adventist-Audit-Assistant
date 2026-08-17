@@ -376,7 +376,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     // Felhasznált (már párosított) OTS tételek jelölése
     $used_map = [];
-    $stmt_used = $conn->query("SELECT br.ots_record_id AS rid, br.church_id AS cid, br.id AS bid FROM bank_reconciliation br WHERE br.ots_record_id IS NOT NULL AND br.ots_record_id > 0");
+    $stmt_used = $conn->query("SELECT br.ots_record_id AS rid, br.church_id AS cid, br.id AS bid FROM bank_reconciliation br WHERE br.ots_record_id IS NOT NULL AND br.ots_record_id <> 0");
     if ($stmt_used) {
         while ($u = $stmt_used->fetch_assoc()) { $used_map[(int)$u['cid']][(int)$u['rid']][] = (int)$u['bid']; }
     }
@@ -968,8 +968,9 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
                                 // Ha se számla, se közlemény minta nem egyezik, akkor csak CSUSZAS marad
                             }
                             
-                            $upd_stmt = $conn->prepare("UPDATE bank_reconciliation SET ots_date=?, ots_doc=?, ots_amount=?, status=?, comment=? WHERE id=?");
-                            $upd_stmt->bind_param("ssdssi", $ots_date_only, $ots_doc_clean, $ots_amt, $new_status, $comment, $id);
+                            $tc_record_id = -1 * (int)$tc_row['tc_id'];
+                            $upd_stmt = $conn->prepare("UPDATE bank_reconciliation SET ots_date=?, ots_doc=?, ots_record_id=?, ots_amount=?, status=?, comment=? WHERE id=?");
+                            $upd_stmt->bind_param("ssidssi", $ots_date_only, $ots_doc_clean, $tc_record_id, $ots_amt, $new_status, $comment, $id);
                             $upd_stmt->execute();
                             
                             if ($mode === 'progressive') { $stats['pass_tc']++; } else { $stats['custom']++; }
@@ -1035,7 +1036,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
         // Egyedi párosítás (bank_reconciliation.ots_record_id) — csak ha nincs items
         if (empty($existing)) {
-            $stmt_ex = $conn->prepare("SELECT ots_record_id, ots_date, ots_amount, ots_doc FROM bank_reconciliation WHERE id = ? AND ots_record_id IS NOT NULL AND ots_record_id > 0");
+            $stmt_ex = $conn->prepare("SELECT ots_record_id, ots_date, ots_amount, ots_doc FROM bank_reconciliation WHERE id = ? AND ots_record_id IS NOT NULL AND ots_record_id <> 0");
             if ($stmt_ex) {
                 $stmt_ex->bind_param('i', $bank_rec_id);
                 $stmt_ex->execute();
@@ -1049,10 +1050,17 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         if (!empty($existing)) {
             // OTS adatok lekérése a meglévő párosításokhoz
             $record_ids = [];
+            $tc_ids = [];
             foreach ($existing as $ex) {
                 $rid = $ex['ots_record_id'] ?? $ex['record_id'] ?? 0;
-                if ($rid > 0) $record_ids[] = $rid;
+                if ($rid > 0) {
+                    $record_ids[] = $rid;
+                } elseif ($rid < 0) {
+                    $tc_ids[] = abs($rid);
+                }
             }
+            $ex_rows = [];
+            // TRANSACTIONS rekordok
             if (!empty($record_ids)) {
                 $id_list = implode(',', array_fill(0, count($record_ids), '?'));
                 $adjusted_amount_sql = "IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)";
@@ -1083,13 +1091,43 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $stmt_ex->execute();
                     $result_ex = $stmt_ex->get_result();
                 }
-                $ex_rows = [];
                 if ($result_ex) {
                     while ($r = $result_ex->fetch_assoc()) {
                         $r['_text_score'] = 0;
                         $ex_rows[] = $r;
                     }
                 }
+            }
+            // TRANSFERS_TO_CONFERENCE rekordok
+            if (!empty($tc_ids)) {
+                $tc_list = implode(',', array_fill(0, count($tc_ids), '?'));
+                $tc_sql = "SELECT tc.id AS TC_ID, tc.YEAR, tc.MONTH, tc.DAY, tc.AMOUNT, tc.VIA_BANK,
+                                  tc.CASH_DOCUMENT_NUMBER, tc.MODIFIED,
+                                  CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')) AS DATETIME,
+                                  (-1 * tc.AMOUNT) AS adjusted_amount,
+                                  CONCAT('Egyházterületnek elutalt (', tc.YEAR, '.', LPAD(tc.MONTH,2,'0'), ' havi, ',
+                                         CASE tc.VIA_BANK WHEN 1 THEN 'Bank' ELSE 'KP' END, ')') AS ots_desc_full,
+                                  'TransfToConf' AS ots_type_name,
+                                  '-' AS ots_editor_name,
+                                  '' AS fund_name
+                           FROM TRANSFERS_TO_CONFERENCE tc
+                           WHERE tc.id IN ($tc_list)";
+                $tc_stmt = $ots_db->prepare($tc_sql);
+                if ($tc_stmt) {
+                    $types = str_repeat('i', count($tc_ids));
+                    $tc_stmt->bind_param($types, ...$tc_ids);
+                    $tc_stmt->execute();
+                    $tc_res = $tc_stmt->get_result();
+                    if ($tc_res) {
+                        while ($tc = $tc_res->fetch_assoc()) {
+                            $tc['RECORD_ID'] = -1 * (int)$tc['TC_ID'];
+                            $tc['_text_score'] = 0;
+                            $ex_rows[] = $tc;
+                        }
+                    }
+                }
+            }
+            if (!empty($ex_rows)) {
                 echo json_encode(['status' => 'OK', 'data' => $ex_rows, 'church_name' => $church_name, 'ots_doc' => $ots_doc, 'bank_date' => $bank_date, 'bank_amount' => $bank_amount, 'unmatched_search' => false, 'from_existing' => true]);
                 exit;
             }
@@ -1125,7 +1163,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         // Felhasznált OTS rekordok lekérése (jelöléshez) — a párosított tételeket is mutatjuk, 🔒 jelzéssel
         $used_map = [];
-        $stmt_used = $conn->prepare("SELECT br.ots_record_id AS rid, br.id AS bid FROM bank_reconciliation br WHERE br.ots_record_id IS NOT NULL AND br.ots_record_id > 0 AND br.church_id = ?");
+        $stmt_used = $conn->prepare("SELECT br.ots_record_id AS rid, br.id AS bid FROM bank_reconciliation br WHERE br.ots_record_id IS NOT NULL AND br.ots_record_id <> 0 AND br.church_id = ?");
         if ($stmt_used) {
             $stmt_used->bind_param('i', $church_id);
             $stmt_used->execute();
@@ -1164,7 +1202,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     AND T.DATETIME >= DATE_SUB(?, INTERVAL 45 DAY)
                     $not_in_clause
                  GROUP BY T.RECORD_ID
-                 HAVING adjusted_amount $sign 0
+                 HAVING ABS(adjusted_amount) > 0
                  ORDER BY ABS(DATEDIFF(T.DATETIME, ?)) ASC, T.DATETIME ASC";
         $stmt = $ots_db->prepare($sql);
         if ($stmt) {
@@ -1275,6 +1313,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
 
+    // TRANSFERS_TO_CONFERENCE keresés — havi átutalások (pl. "Egyházterületnek elutalt")
+    if ($unmatched_search && !empty($bank_date)) {
+        $tc_sql = "SELECT tc.id AS TC_ID, tc.YEAR, tc.MONTH, tc.DAY, tc.AMOUNT, tc.VIA_BANK,
+                          tc.CASH_DOCUMENT_NUMBER, tc.MODIFIED,
+                          CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')) AS DATETIME,
+                          (-1 * tc.AMOUNT) AS adjusted_amount,
+                          CONCAT('Egyházterületnek elutalt (', tc.YEAR, '.', LPAD(tc.MONTH,2,'0'), ' havi, ',
+                                 CASE tc.VIA_BANK WHEN 1 THEN 'Bank' ELSE 'KP' END, ')') AS ots_desc_full,
+                          'TransfToConf' AS ots_type_name,
+                          '-' AS ots_editor_name,
+                          '' AS fund_name
+                   FROM TRANSFERS_TO_CONFERENCE tc
+                   WHERE tc.CHURCH_ID = ?
+                     AND CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')) BETWEEN ? AND ?
+                     AND tc.AMOUNT > 0";
+        $tc_stmt = $ots_db->prepare($tc_sql);
+        if ($tc_stmt) {
+            $tc_stmt->bind_param('iss', $church_id, $start_date, $end_date);
+            $tc_stmt->execute();
+            $tc_res = $tc_stmt->get_result();
+            if ($tc_res) {
+                while ($tc = $tc_res->fetch_assoc()) {
+                    $tc_rid = -1 * (int)$tc['TC_ID'];
+                    $tc_text = mb_strtoupper($tc['ots_desc_full'] ?? '', 'UTF-8');
+                    $score = 0;
+                    foreach ($b_words as $word) {
+                        if (mb_strlen($word, 'UTF-8') >= 4 && mb_strpos($tc_text, $word) !== false) {
+                            $score++;
+                        }
+                    }
+                    $tc['_text_score'] = $score;
+                    $tc['RECORD_ID'] = $tc_rid;
+                    $tc['CASH_DOCUMENT_NUMBER'] = $tc['CASH_DOCUMENT_NUMBER'] ?? '';
+                    if (isset($used_map[$tc_rid])) {
+                        $bank_ids = array_unique($used_map[$tc_rid]);
+                        sort($bank_ids);
+                        $tc['_used'] = true;
+                        $tc['_used_count'] = count($bank_ids);
+                        $tc['_used_bank_ids'] = implode(',', $bank_ids);
+                    }
+                    $rows[] = $tc;
+                }
+            }
+        }
+    }
+
     // Rendezés: text score DESC, majd dátum diff ASC (csak normál módban, unmatched-nél már rendezve van)
     if (!$unmatched_search && !empty($bank_date)) {
         usort($rows, function ($a, $b) use ($bank_date) {
@@ -1349,12 +1433,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $bank_words = array_unique($bank_words);
     sort($bank_words);
 
-    $sign = $bank_amount >= 0 ? '>=' : '<';
     $result = false;
 
     // Felhasznált OTS rekordok lekérése (jelöléshez) — a párosított tételeket is mutatjuk, 🔒 jelzéssel
     $used_map = [];
-    $stmt_used = $conn->prepare("SELECT br.ots_record_id AS rid, br.id AS bid FROM bank_reconciliation br WHERE br.ots_record_id IS NOT NULL AND br.ots_record_id > 0 AND br.church_id = ?");
+    $stmt_used = $conn->prepare("SELECT br.ots_record_id AS rid, br.id AS bid FROM bank_reconciliation br WHERE br.ots_record_id IS NOT NULL AND br.ots_record_id <> 0 AND br.church_id = ?");
     if ($stmt_used) {
         $stmt_used->bind_param('i', $church_id);
         $stmt_used->execute();
@@ -1421,7 +1504,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                  AND T.DATETIME BETWEEN '$start_date' AND '$end_date'
                  AND $like_where
                GROUP BY T.RECORD_ID
-               HAVING adjusted_amount $sign 0
+               HAVING ABS(adjusted_amount) > 0
                ORDER BY T.DATETIME DESC
                LIMIT 100";
 
@@ -1451,6 +1534,69 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $r['_text_score'] = $score;
             $r['_source'] = 'aggregation';
             $rows[] = $r;
+        }
+        // TRANSFERS_TO_CONFERENCE szöveges keresés — a leírás tartalmazza a kulcsszavakat
+        if (!empty($bank_date)) {
+            $tc_like_parts = [];
+            foreach ($keywords as $kw) {
+                $esc_kw = $ots_db->real_escape_string($kw);
+                $tc_like_parts[] = "(CONCAT(tc.YEAR, '.', LPAD(tc.MONTH,2,'0'), ' havi') LIKE '%$esc_kw%')";
+            }
+            // Alapértelmezett kulcsszó: "Egyházterületnek" vagy "átutal" — mindig keressük
+            $tc_base_kw = ['egyházterületnek', 'elutalt', 'átvezetés', 'transf'];
+            $tc_always_match = false;
+            foreach ($tc_base_kw as $bk) {
+                foreach ($keywords as $kw) {
+                    if (mb_stripos($kw, $bk) !== false || mb_stripos($bk, $kw) !== false) {
+                        $tc_always_match = true;
+                        break 2;
+                    }
+                }
+            }
+            if ($tc_always_match || !empty($tc_like_parts)) {
+                $tc_where = !empty($tc_like_parts) ? implode(' OR ', $tc_like_parts) : '1=1';
+                $tc_sql = "SELECT tc.id AS TC_ID, tc.YEAR, tc.MONTH, tc.DAY, tc.AMOUNT, tc.VIA_BANK,
+                                  tc.CASH_DOCUMENT_NUMBER, tc.MODIFIED,
+                                  CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')) AS DATETIME,
+                                  (-1 * tc.AMOUNT) AS adjusted_amount,
+                                  CONCAT('Egyházterületnek elutalt (', tc.YEAR, '.', LPAD(tc.MONTH,2,'0'), ' havi, ',
+                                         CASE tc.VIA_BANK WHEN 1 THEN 'Bank' ELSE 'KP' END, ')') AS ots_desc_full,
+                                  'TransfToConf' AS ots_type_name,
+                                  '-' AS ots_editor_name,
+                                  '' AS fund_name,
+                                  tc.CHURCH_ID
+                           FROM TRANSFERS_TO_CONFERENCE tc
+                           WHERE tc.CHURCH_ID = $church_id
+                             AND CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')) BETWEEN '$start_date' AND '$end_date'
+                             AND tc.AMOUNT > 0
+                             AND ($tc_where)
+                           ORDER BY tc.YEAR DESC, tc.MONTH DESC
+                           LIMIT 20";
+                $tc_result = $ots_db->query($tc_sql);
+                if ($tc_result && !$ots_db->errno) {
+                    while ($tc = $tc_result->fetch_assoc()) {
+                        $tc_rid = -1 * (int)$tc['TC_ID'];
+                        $tc['RECORD_ID'] = $tc_rid;
+                        $tc_text = mb_strtoupper($tc['ots_desc_full'] ?? '', 'UTF-8');
+                        $score = 0;
+                        foreach ($keywords as $kw) {
+                            if (mb_stripos($tc_text, $kw) !== false) {
+                                $score++;
+                            }
+                        }
+                        $tc['_text_score'] = $score;
+                        $tc['_source'] = 'aggregation';
+                        if (isset($used_map[$tc_rid])) {
+                            $bank_ids = array_unique($used_map[$tc_rid]);
+                            sort($bank_ids);
+                            $tc['_used'] = true;
+                            $tc['_used_count'] = count($bank_ids);
+                            $tc['_used_bank_ids'] = implode(',', $bank_ids);
+                        }
+                        $rows[] = $tc;
+                    }
+                }
+            }
         }
         // Rendezés pontszám szerint csökkenően
         usort($rows, function ($a, $b) {
@@ -1531,7 +1677,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $church_id = isset($_POST['church_id']) ? intval($_POST['church_id']) : 0;
     $bank_ids = isset($_POST['bank_ids']) ? json_decode($_POST['bank_ids'], true) : [];
 
-    if ($ots_record_id <= 0 || empty($bank_ids) || $church_id <= 0) {
+    if ($ots_record_id == 0 || empty($bank_ids) || $church_id <= 0) {
         echo json_encode(['status' => 'ERROR', 'message' => 'Hiányzó paraméter']);
         exit;
     }
@@ -1540,18 +1686,34 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     require_church_access($church_id);
 
     // OTS adatok lekérése az összeg pontosításhoz
-    $ots_check = $ots_db->prepare("SELECT adjusted_amount FROM (
-        SELECT SUM(IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)) AS adjusted_amount
-        FROM TRANSACTIONS T WHERE T.RECORD_ID = ? AND T.CHURCH_ID = ?
-    ) sub");
     $actual_ots_amount = $ots_amount;
-    if ($ots_check) {
-        $ots_check->bind_param('ii', $ots_record_id, $church_id);
-        $ots_check->execute();
-        $ots_check_res = $ots_check->get_result();
-        if ($ots_check_res && $ots_check_res->num_rows > 0) {
-            $row = $ots_check_res->fetch_assoc();
-            $actual_ots_amount = $row['adjusted_amount'];
+    if ($ots_record_id > 0) {
+        // TRANSACTIONS rekord
+        $ots_check = $ots_db->prepare("SELECT adjusted_amount FROM (
+            SELECT SUM(IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)) AS adjusted_amount
+            FROM TRANSACTIONS T WHERE T.RECORD_ID = ? AND T.CHURCH_ID = ?
+        ) sub");
+        if ($ots_check) {
+            $ots_check->bind_param('ii', $ots_record_id, $church_id);
+            $ots_check->execute();
+            $ots_check_res = $ots_check->get_result();
+            if ($ots_check_res && $ots_check_res->num_rows > 0) {
+                $row = $ots_check_res->fetch_assoc();
+                $actual_ots_amount = $row['adjusted_amount'];
+            }
+        }
+    } elseif ($ots_record_id < 0) {
+        // TRANSFERS_TO_CONFERENCE rekord
+        $tc_id = abs($ots_record_id);
+        $tc_check = $ots_db->prepare("SELECT -1 * AMOUNT AS adjusted_amount FROM TRANSFERS_TO_CONFERENCE WHERE id = ?");
+        if ($tc_check) {
+            $tc_check->bind_param('i', $tc_id);
+            $tc_check->execute();
+            $tc_res = $tc_check->get_result();
+            if ($tc_res && $tc_res->num_rows > 0) {
+                $row = $tc_res->fetch_assoc();
+                $actual_ots_amount = $row['adjusted_amount'];
+            }
         }
     }
 
@@ -1583,14 +1745,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
         }
 
-        $doc_stmt = $ots_db->prepare("SELECT CASH_DOCUMENT_NUMBER FROM TRANSACTIONS WHERE RECORD_ID = ? LIMIT 1");
         $doc_value = '';
-        if ($doc_stmt) {
-            $doc_stmt->bind_param('i', $ots_record_id);
-            $doc_stmt->execute();
-            $doc_res = $doc_stmt->get_result();
-            if ($doc_res && ($doc_row = $doc_res->fetch_assoc())) {
-                $doc_value = $doc_row['CASH_DOCUMENT_NUMBER'] ?? '';
+        if ($ots_record_id > 0) {
+            $doc_stmt = $ots_db->prepare("SELECT CASH_DOCUMENT_NUMBER FROM TRANSACTIONS WHERE RECORD_ID = ? LIMIT 1");
+            if ($doc_stmt) {
+                $doc_stmt->bind_param('i', $ots_record_id);
+                $doc_stmt->execute();
+                $doc_res = $doc_stmt->get_result();
+                if ($doc_res && ($doc_row = $doc_res->fetch_assoc())) {
+                    $doc_value = $doc_row['CASH_DOCUMENT_NUMBER'] ?? '';
+                }
+            }
+        } elseif ($ots_record_id < 0) {
+            $tc_doc_id = abs($ots_record_id);
+            $tc_doc_stmt = $ots_db->prepare("SELECT CASH_DOCUMENT_NUMBER FROM TRANSFERS_TO_CONFERENCE WHERE id = ?");
+            if ($tc_doc_stmt) {
+                $tc_doc_stmt->bind_param('i', $tc_doc_id);
+                $tc_doc_stmt->execute();
+                $tc_doc_res = $tc_doc_stmt->get_result();
+                if ($tc_doc_res && ($tc_doc_row = $tc_doc_res->fetch_assoc())) {
+                    $doc_value = $tc_doc_row['CASH_DOCUMENT_NUMBER'] ?? '';
+                }
             }
         }
         $sql = "UPDATE bank_reconciliation SET ots_record_id = ?, ots_amount = ?, ots_date = ?, ots_doc = ?, status = ?, comment = ?, updated_by = ? WHERE id = ? AND church_id = ?";
@@ -1646,9 +1821,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if ($mode === 'multi' && isset($_POST['record_ids']) && is_array($_POST['record_ids'])) {
         foreach ($_POST['record_ids'] as $rid_post) {
             $rid_int = intval($rid_post);
-            if ($rid_int > 0) { $candidate_ids[] = $rid_int; }
+            if ($rid_int != 0) { $candidate_ids[] = $rid_int; }
         }
-    } elseif ($mode === 'single' && isset($_POST['ots_record_id']) && intval($_POST['ots_record_id']) > 0) {
+    } elseif ($mode === 'single' && isset($_POST['ots_record_id']) && intval($_POST['ots_record_id']) != 0) {
         $candidate_ids[] = intval($_POST['ots_record_id']);
     }
     $candidate_ids = array_values(array_unique($candidate_ids));
@@ -1691,33 +1866,60 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if ($mode === 'multi' && isset($_POST['record_ids']) && is_array($_POST['record_ids'])) {
         // --- TÖBB OTS TÉTEL PÁROSÍTÁSA ---
         $record_ids = array_map('intval', $_POST['record_ids']);
-        $record_ids = array_filter($record_ids, fn($v) => $v > 0);
+        $record_ids = array_filter($record_ids, fn($v) => $v != 0);
         if (empty($record_ids)) {
             echo json_encode(['status' => 'ERROR', 'message' => 'Nincs kiválasztva OTS tétel']);
             exit;
         }
 
-        $rid_list = implode(',', array_fill(0, count($record_ids), '?'));
-        $items_stmt = $ots_db->prepare("SELECT RECORD_ID, AMOUNT, TYPE, DATETIME, CASH_DOCUMENT_NUMBER FROM TRANSACTIONS WHERE RECORD_ID IN ($rid_list)");
-        if ($items_stmt) {
-            $types = str_repeat('i', count($record_ids));
-            $items_stmt->bind_param($types, ...$record_ids);
-            $items_stmt->execute();
-            $items_res = $items_stmt->get_result();
-        } else {
-            $items_res = false;
-        }
+        // Szétválasztás: TRANSACTIONS (pozitív) vs TRANSFERS_TO_CONFERENCE (negatív)
+        $tx_ids = array_filter($record_ids, fn($v) => $v > 0);
+        $tc_ids = array_map('abs', array_filter($record_ids, fn($v) => $v < 0));
+
         $total_ots_amount = 0;
         $dates = [];
         $item_data = [];
         $docs = [];
-        if ($items_res) {
-            while ($item = $items_res->fetch_assoc()) {
-                $adj = in_array($item['TYPE'], $exp_types) ? -1 * $item['AMOUNT'] : $item['AMOUNT'];
-                $total_ots_amount += $adj;
-                $dates[] = $item['DATETIME'];
-                $docs[] = $item['CASH_DOCUMENT_NUMBER'];
-                $item_data[] = $item;
+
+        // TRANSACTIONS rekordok lekérdezése
+        if (!empty($tx_ids)) {
+            $rid_list = implode(',', array_fill(0, count($tx_ids), '?'));
+            $items_stmt = $ots_db->prepare("SELECT RECORD_ID, AMOUNT, TYPE, DATETIME, CASH_DOCUMENT_NUMBER FROM TRANSACTIONS WHERE RECORD_ID IN ($rid_list)");
+            if ($items_stmt) {
+                $types = str_repeat('i', count($tx_ids));
+                $items_stmt->bind_param($types, ...array_values($tx_ids));
+                $items_stmt->execute();
+                $items_res = $items_stmt->get_result();
+                if ($items_res) {
+                    while ($item = $items_res->fetch_assoc()) {
+                        $adj = in_array($item['TYPE'], $exp_types) ? -1 * $item['AMOUNT'] : $item['AMOUNT'];
+                        $total_ots_amount += $adj;
+                        $dates[] = $item['DATETIME'];
+                        $docs[] = $item['CASH_DOCUMENT_NUMBER'];
+                        $item_data[] = $item;
+                    }
+                }
+            }
+        }
+
+        // TRANSFERS_TO_CONFERENCE rekordok lekérdezése
+        if (!empty($tc_ids)) {
+            $tc_list = implode(',', array_fill(0, count($tc_ids), '?'));
+            $tc_stmt = $ots_db->prepare("SELECT id AS RECORD_ID, AMOUNT, CONCAT(YEAR, '-', LPAD(MONTH,2,'0'), '-', LPAD(DAY,2,'0')) AS DATETIME, CASH_DOCUMENT_NUMBER FROM TRANSFERS_TO_CONFERENCE WHERE id IN ($tc_list)");
+            if ($tc_stmt) {
+                $types = str_repeat('i', count($tc_ids));
+                $tc_stmt->bind_param($types, ...array_values($tc_ids));
+                $tc_stmt->execute();
+                $tc_res = $tc_stmt->get_result();
+                if ($tc_res) {
+                    while ($tc = $tc_res->fetch_assoc()) {
+                        $total_ots_amount += (-1 * $tc['AMOUNT']);
+                        $dates[] = $tc['DATETIME'];
+                        $docs[] = $tc['CASH_DOCUMENT_NUMBER'];
+                        $tc['RECORD_ID'] = -1 * (int)$tc['RECORD_ID'];
+                        $item_data[] = $tc;
+                    }
+                }
             }
         }
 
@@ -1777,7 +1979,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
         // RECORD_ID meghatározása
         $record_id = isset($_POST['ots_record_id']) ? intval($_POST['ots_record_id']) : 0;
-        if ($record_id <= 0 && !empty($ots_doc)) {
+        if ($record_id == 0 && !empty($ots_doc)) {
             $rid_church_id = 0;
             $rid_stmt = $conn->prepare("SELECT church_id FROM bank_reconciliation WHERE id = ?");
             if ($rid_stmt) { $rid_stmt->bind_param('i', $id); $rid_stmt->execute(); $rch = $rid_stmt->get_result(); if ($rch && $rr = $rch->fetch_assoc()) { $rid_church_id = (int)$rr['church_id']; } }
@@ -1795,7 +1997,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             }
         }
         if ($record_id > 0) {
-            // Insert individual OTS items (handles TYPE=1 multi-item record_ids)
+            // TRANSACTIONS — Insert individual OTS items (handles TYPE=1 multi-item record_ids)
             $church_id_item = intval($row['church_id']);
             $its_sql = "SELECT id, AMOUNT, TYPE, CASH_DOCUMENT_NUMBER, DATETIME FROM TRANSACTIONS WHERE RECORD_ID = ? AND CHURCH_ID = ? ORDER BY id";
             $its_st = $ots_db->prepare($its_sql);
@@ -1823,6 +2025,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $doc_list = !empty($item_docs) ? implode(', ', array_unique($item_docs)) : ((string)$record_id);
             if ($earliest_date !== null) $ots_date_only = $earliest_date;
             if (!empty($doc_list)) $ots_doc = $doc_list;
+        } elseif ($record_id < 0) {
+            // TRANSFERS_TO_CONFERENCE — negatív record_id
+            $tc_id = abs($record_id);
+            $tc_item = $ots_db->prepare("SELECT id, AMOUNT, CONCAT(YEAR, '-', LPAD(MONTH,2,'0'), '-', LPAD(DAY,2,'0')) AS DATETIME, CASH_DOCUMENT_NUMBER FROM TRANSFERS_TO_CONFERENCE WHERE id = ?");
+            if ($tc_item) {
+                $tc_item->bind_param("i", $tc_id);
+                $tc_item->execute();
+                $tc_res = $tc_item->get_result();
+                if ($tc_res && $tc_row = $tc_res->fetch_assoc()) {
+                    $item_dates = [$tc_row['DATETIME']];
+                    $item_docs = [];
+                    if (!empty($tc_row['CASH_DOCUMENT_NUMBER']) && $tc_row['CASH_DOCUMENT_NUMBER'] !== '0000') {
+                        $item_docs[] = $tc_row['CASH_DOCUMENT_NUMBER'];
+                    }
+                    $stmt_item = $conn->prepare("INSERT INTO bank_reconciliation_items (reconciliation_id, record_id, amount) VALUES (?, ?, ?)");
+                    if ($stmt_item) {
+                        $adj = -1.0 * (float)$tc_row['AMOUNT'];
+                        $stmt_item->bind_param("iid", $id, $record_id, $adj);
+                        $stmt_item->execute();
+                    }
+                    $earliest_date = substr($tc_row['DATETIME'], 0, 10);
+                    $doc_list = !empty($item_docs) ? implode(', ', $item_docs) : "TC-{$tc_id}";
+                    $ots_date_only = $earliest_date;
+                    $ots_doc = $doc_list;
+                }
+            }
         }
 
         $upd = $conn->prepare("UPDATE bank_reconciliation SET ots_date=?, ots_doc=?, ots_record_id=?, ots_amount=?, status=?, comment=? WHERE id=?");
@@ -3830,6 +4058,7 @@ function renderOtsResults(result, adatok, keywords) {
                     '<input type="checkbox" class="form-check-input me-2 checkbox-input" data-doc="' + docAttr + '" data-record-id="' + recordIdAttr + '" data-date="' + dateAttr + '" data-amount="' + adjAmount + '" style="display:none;" onchange="event.stopPropagation(); frissitMultiOsszegzo();">') +
                     '<span class="fw-bold me-2">#' + (idx + 1) + '</span>' +
                     (isExactMatch ? '<span class="badge bg-success me-1">Egyezés</span>' : isAmountMatch ? '<span class="badge bg-warning text-dark me-1">Összeg egyezik</span>' : '') +
+                    (tx.ots_type_name === 'TransfToConf' ? '<span class="badge bg-info text-dark me-1">🏦 TRANSFERS_TO_CONFERENCE</span>' : '') +
                     '<span class="badge bg-secondary me-2">' + otsDate + '</span>' +
                     '<span class="' + (adjAmount < 0 ? 'text-danger' : 'text-success') + ' fw-bold me-2">' + otsAmount + '</span>' +
                     '<small class="text-muted text-truncate" style="max-width: 200px;">' + escapeHtml(otsDesc) + '</small>' +
@@ -4199,7 +4428,7 @@ function aggregationSearch(customKeywords) {
                 html += '<tr><th>Alap:</th><td>' + fundInfo + '</td></tr>';
             }
 
-            var hiddenKeys = ['ots_editor_name', 'EDITED_BY', 'FUND_ID', 'fund_name', 'AMOUNT', 'CHURCH_ID', 'TYPE'];
+        var hiddenKeys = ['ots_editor_name', 'EDITED_BY', 'FUND_ID', 'fund_name', 'AMOUNT', 'CHURCH_ID', 'TYPE', 'YEAR', 'MONTH', 'DAY', 'TC_ID'];
             Object.keys(tx).forEach(function(key) {
                 if (!columnOrder.includes(key) && !hiddenKeys.includes(key) && !key.startsWith('ots_') && key.charAt(0) !== '_') {
                     var val = tx[key];
