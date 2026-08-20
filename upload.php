@@ -480,6 +480,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $base_fingerprint = $church_id . '_' . $bank_date . '_' . $bank_amount . '_' . $bank_desc . '_' . $bank_ext_acc . '_' . $bank_ext_ref . '_' . $bank_tx_code . '_' . $bank_tx_code_iso . '_' . $bank_stmt_date;
                         $row_hash = md5($base_fingerprint);
 
+                        // Soft dedup: church_id + date + amount + ext_ref alapján (nem függ a számlaszám formátumtól)
+                        $soft_key = $church_id . '_' . $bank_date . '_' . $bank_amount . '_' . $bank_ext_ref;
+                        if (isset($seen_in_file[$soft_key])) { $skipped_rows++; $duplicate_count++; continue; }
+                        $seen_in_file[$soft_key] = true;
+
+                        // DB dedup: meglévő rekord ugyanazzal az egyedi azonosítóval
+                        $db_dup = $conn->prepare("SELECT id FROM bank_reconciliation WHERE church_id = ? AND bank_date = ? AND bank_amount = ? AND bank_ext_ref = ? LIMIT 1");
+                        if ($db_dup) {
+                            $db_dup->bind_param('isds', $church_id, $bank_date, $bank_amount, $bank_ext_ref);
+                            $db_dup->execute();
+                            if ($db_dup->get_result()->num_rows > 0) { $skipped_rows++; $duplicate_count++; continue; }
+                        }
+
                         try {
                             $stmt = $conn->prepare("INSERT INTO bank_reconciliation (row_hash, church_id, bank_date, bank_amount, bank_desc, bank_ext_acc, bank_ext_name, bank_ext_ref, status, bank_init_name, bank_init_acc, bank_ben_name, bank_ben_acc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UNCHECKED', ?, ?, ?, ?)");
                             $stmt->bind_param("sisdssssssss", $row_hash, $church_id, $bank_date, $bank_amount, $bank_desc, $bank_ext_acc, $bank_ext_name, $bank_ext_ref, $init_name_raw, $init_acc_raw, $ben_name_raw, $ben_acc_raw);
@@ -675,6 +688,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $base_fingerprint = $church_id . '_' . $bank_date . '_' . $bank_amount . '_' . $bank_desc . '_' . $bank_ext_acc . '_' . $bank_ext_ref . '_' . $bank_tx_code . '_' . $bank_tx_code_iso . '_' . $bank_stmt_date;
                             $row_hash = md5($base_fingerprint);
 
+                            // Soft dedup: church_id + date + amount + ext_ref alapján
+                            $soft_key = $church_id . '_' . $bank_date . '_' . $bank_amount . '_' . $bank_ext_ref;
+                            if (isset($seen_in_file[$soft_key])) { $skipped_rows++; $duplicate_count++; continue; }
+                            $seen_in_file[$soft_key] = true;
+
+                            // DB dedup: meglévő rekord ugyanazzal az egyedi azonosítóval
+                            $db_dup = $conn->prepare("SELECT id FROM bank_reconciliation WHERE church_id = ? AND bank_date = ? AND bank_amount = ? AND bank_ext_ref = ? LIMIT 1");
+                            if ($db_dup) {
+                                $db_dup->bind_param('isds', $church_id, $bank_date, $bank_amount, $bank_ext_ref);
+                                $db_dup->execute();
+                                if ($db_dup->get_result()->num_rows > 0) { $skipped_rows++; $duplicate_count++; continue; }
+                            }
+
                             try {
                                 $stmt = $conn->prepare("INSERT INTO bank_reconciliation (row_hash, church_id, bank_date, bank_amount, bank_desc, bank_ext_acc, bank_ext_name, bank_ext_ref, status, bank_init_name, bank_init_acc, bank_ben_name, bank_ben_acc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UNCHECKED', ?, ?, ?, ?)");
                                 $stmt->bind_param("sisdssssssss", $row_hash, $church_id, $bank_date, $bank_amount, $bank_desc, $bank_ext_acc, $bank_ext_name, $bank_ext_ref, $init_name_raw, $init_acc_raw, $ben_name_raw, $ben_acc_raw);
@@ -863,6 +889,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $bank_tx_code_iso = ($idx_tx_code_iso !== FALSE) ? trim($row[$idx_tx_code_iso] ?? '', " \"") : '';
             $base_fingerprint = $church_id . '_' . $bank_date . '_' . $bank_amount . '_' . $bank_desc . '_' . $bank_ext_acc . '_' . $bank_ext_ref . '_' . $bank_tx_code . '_' . $bank_tx_code_iso . '_' . $bank_stmt_date;
             $row_hash = md5($base_fingerprint);
+
+            // Soft dedup: church_id + date + amount + ext_ref alapján (nem függ a számlaszám formátumtól)
+            $soft_key = $church_id . '_' . $bank_date . '_' . $bank_amount . '_' . $bank_ext_ref;
+            if (isset($seen_in_file[$soft_key])) { $skipped++; $duplicate++; continue; }
+            $seen_in_file[$soft_key] = true;
+
+            // DB dedup: meglévő rekord ugyanazzal az egyedi azonosítóval
+            $db_dup = $conn->prepare("SELECT id FROM bank_reconciliation WHERE church_id = ? AND bank_date = ? AND bank_amount = ? AND bank_ext_ref = ? LIMIT 1");
+            if ($db_dup) {
+                $db_dup->bind_param('isds', $church_id, $bank_date, $bank_amount, $bank_ext_ref);
+                $db_dup->execute();
+                if ($db_dup->get_result()->num_rows > 0) { $skipped++; $duplicate++; continue; }
+            }
+
             try {
                 $stmt = $conn->prepare("INSERT INTO bank_reconciliation (row_hash, church_id, bank_date, bank_amount, bank_desc, bank_ext_acc, bank_ext_name, bank_ext_ref, status, bank_init_name, bank_init_acc, bank_ben_name, bank_ben_acc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UNCHECKED', ?, ?, ?, ?)");
                 $stmt->bind_param("sisdssssssss", $row_hash, $church_id, $bank_date, $bank_amount, $bank_desc, $bank_ext_acc, $bank_ext_name, $bank_ext_ref, $init_name_raw, $init_acc_raw, $ben_name_raw, $ben_acc_raw);

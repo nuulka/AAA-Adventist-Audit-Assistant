@@ -785,6 +785,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                     continue;
                                 }
                                 
+                                // Dátum irány ellenőrzés: banki kezdeményezésű tételeknél (beszedési díj, jutalék)
+                                // az OTS dátum nem lehet a banki dátum előtt
+                                if (!empty($bank_date) && !empty($best_match['ots_date'])) {
+                                    $ots_dt = substr($best_match['ots_date'], 0, 10);
+                                    $b_desc_lower = mb_strtolower($b_desc, 'UTF-8');
+                                    $is_bank_initiated = (mb_strpos($b_desc_lower, 'beszedés') !== false || mb_strpos($b_desc_lower, 'beszed') !== false
+                                        || mb_strpos($b_desc_lower, 'jutalék') !== false || mb_strpos($b_desc_lower, 'kezelési') !== false
+                                        || mb_strpos($b_desc_lower, 'szolgáltatási') !== false);
+                                    if ($is_bank_initiated && $ots_dt < $bank_date) {
+                                        continue; // Banki kezdeményezésű tétel: OTS nem lehet korábbi
+                                    }
+                                }
+                                
                                 if (($text_score > 0 || $is_large_amount) && $score >= 2) {
                                     if ($score > $best_score || ($score == $best_score && $amt_diff < $min_amt_diff)) {
                                         $best_score = $score;
@@ -851,6 +864,15 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
                             $ots_doc_clean = $ots_row['ots_doc'] ?? '';
                             if ($ots_doc_clean === '0000') $ots_doc_clean = '';
                             
+                            // Dátum irány ellenőrzés: banki kezdeményezésű tételeknél az OTS nem lehet korábbi
+                            $b_desc_lower2 = mb_strtolower($b_desc, 'UTF-8');
+                            $is_bank_init2 = (mb_strpos($b_desc_lower2, 'beszedés') !== false || mb_strpos($b_desc_lower2, 'beszed') !== false
+                                || mb_strpos($b_desc_lower2, 'jutalék') !== false || mb_strpos($b_desc_lower2, 'kezelési') !== false
+                                || mb_strpos($b_desc_lower2, 'szolgáltatási') !== false);
+                            if ($is_bank_init2 && !empty($ots_date_only) && !empty($bank_date) && $ots_date_only < $bank_date) {
+                                // Banki kezdeményezésű tétel: OTS nem lehet korábbi
+                            } else {
+                            
                             // 40 napos duplikátumszűrő: ha ugyanaz az összeg + hasonló közlemény más napon is előfordul 40 napon belül
                             $is_duplicate = false;
                             if ($days === 0) {
@@ -877,6 +899,7 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
                             $total_matched++;
                             $matched_ots = true;
                             break;
+                            } // end date order check else
                         }
                     }
                     
@@ -1021,6 +1044,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     // require access to this church
     require_church_access($church_id);
 
+    try {
     // Ha a banki tételnek már van meglévő párosítása, azt adjuk vissza
     if (!$unmatched_search && $bank_rec_id > 0) {
         $existing = [];
@@ -1044,6 +1068,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 if ($ex_res && $ex_res->num_rows > 0) {
                     $ex_row = $ex_res->fetch_assoc();
                     $existing[] = $ex_row;
+                }
+            }
+        }
+        // Fallback: ha ots_record_id=NULL de ots_amount/ots_date be van állítva (régi auto_match TC rekordok)
+        if (empty($existing)) {
+            $stmt_fb = $conn->prepare("SELECT ots_amount, ots_date, ots_doc FROM bank_reconciliation WHERE id = ? AND ots_amount IS NOT NULL AND ots_amount != 0 AND ots_date IS NOT NULL");
+            if ($stmt_fb) {
+                $stmt_fb->bind_param('i', $bank_rec_id);
+                $stmt_fb->execute();
+                $fb_res = $stmt_fb->get_result();
+                if ($fb_res && $fb_res->num_rows > 0) {
+                    $fb_row = $fb_res->fetch_assoc();
+                    $fb_ots_amount = abs(floatval($fb_row['ots_amount']));
+                    $fb_ots_date = $fb_row['ots_date'];
+                    // TRANSFERS_TO_CONFERENCE keresés: CHURCH_ID + AMOUNT egyezés ±70 napban
+                    $tc_fb = $ots_db->prepare("SELECT tc.id, tc.AMOUNT, tc.YEAR, tc.MONTH, tc.DAY, tc.VIA_BANK,
+                        CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')) AS tc_date
+                        FROM TRANSFERS_TO_CONFERENCE tc
+                        WHERE tc.CHURCH_ID = ? AND tc.AMOUNT = ? AND tc.VIA_BANK = 1
+                        AND CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0'))
+                            BETWEEN DATE_SUB(?, INTERVAL 70 DAY) AND DATE_ADD(?, INTERVAL 70 DAY)
+                        ORDER BY ABS(DATEDIFF(CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')), ?)) ASC
+                        LIMIT 1");
+                    if ($tc_fb) {
+                        $tc_fb->bind_param('idsss', $church_id, $fb_ots_amount, $fb_ots_date, $fb_ots_date, $fb_ots_date);
+                        $tc_fb->execute();
+                        $tc_fb_res = $tc_fb->get_result();
+                        if ($tc_fb_res && $tc_fb_res->num_rows > 0) {
+                            $tc_fb_row = $tc_fb_res->fetch_assoc();
+                            $existing[] = ['ots_record_id' => -1 * (int)$tc_fb_row['id']];
+                        }
+                    }
                 }
             }
         }
@@ -1134,6 +1190,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
 
+    // Irány szűrés: negatív banki összeg → csak negatív OTS tétel, pozitív → pozitív
+    $sign_having = '';
+    if ($bank_amount < 0) {
+        $sign_having = ' AND adjusted_amount < 0';
+    } elseif ($bank_amount > 0) {
+        $sign_having = ' AND adjusted_amount > 0';
+    }
+
     $adjusted_amount_sql = "IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)";
 
     $base_joins = "FROM TRANSACTIONS T
@@ -1145,6 +1209,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
              LEFT JOIN FUNDS funds ON T.FUND_ID = funds.id";
 
     $sign = $bank_amount >= 0 ? '>=' : '<';
+
+    // Felhasznált OTS rekordok lekérése (jelöléshez) — mindkét keresési módban (unmatched + aggregation) kell
+    $used_map = [];
+    $stmt_used = $conn->prepare("SELECT br.ots_record_id AS rid, br.id AS bid FROM bank_reconciliation br WHERE br.ots_record_id IS NOT NULL AND br.ots_record_id <> 0 AND br.church_id = ?");
+    if ($stmt_used) {
+        $stmt_used->bind_param('i', $church_id);
+        $stmt_used->execute();
+        $used_res = $stmt_used->get_result();
+        while ($u = $used_res->fetch_assoc()) {
+            $used_map[(int)$u['rid']][] = (int)$u['bid'];
+        }
+    }
+    $stmt_used2 = $conn->prepare("SELECT bi.record_id AS rid, bi.reconciliation_id AS bid FROM bank_reconciliation_items bi");
+    if ($stmt_used2) {
+        $stmt_used2->execute();
+        $used_res2 = $stmt_used2->get_result();
+        while ($u = $used_res2->fetch_assoc()) {
+            $used_map[(int)$u['rid']][] = (int)$u['bid'];
+        }
+    }
 
     if ($unmatched_search) {
         // Párosítatlan keresés: minden OTS tétel a gyülekezetre +/- 70 napban, ami még nincs felhasználva
@@ -1160,26 +1244,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
         $start_date = !empty($bank_date) ? date('Y-m-d', strtotime($is_fee ? $bank_date : "$bank_date -70 days")) : '1970-01-01';
         $end_date = !empty($bank_date) ? date('Y-m-d', strtotime("$bank_date +70 days")) : date('Y-m-d', strtotime('+70 days'));
-
-        // Felhasznált OTS rekordok lekérése (jelöléshez) — a párosított tételeket is mutatjuk, 🔒 jelzéssel
-        $used_map = [];
-        $stmt_used = $conn->prepare("SELECT br.ots_record_id AS rid, br.id AS bid FROM bank_reconciliation br WHERE br.ots_record_id IS NOT NULL AND br.ots_record_id <> 0 AND br.church_id = ?");
-        if ($stmt_used) {
-            $stmt_used->bind_param('i', $church_id);
-            $stmt_used->execute();
-            $used_res = $stmt_used->get_result();
-            while ($u = $used_res->fetch_assoc()) {
-                $used_map[(int)$u['rid']][] = (int)$u['bid'];
-            }
-        }
-        $stmt_used2 = $conn->prepare("SELECT bi.record_id AS rid, bi.reconciliation_id AS bid FROM bank_reconciliation_items bi");
-        if ($stmt_used2) {
-            $stmt_used2->execute();
-            $used_res2 = $stmt_used2->get_result();
-            while ($u = $used_res2->fetch_assoc()) {
-                $used_map[(int)$u['rid']][] = (int)$u['bid'];
-            }
-        }
 
         $not_in_clause = '';
         $not_in_params = [];
@@ -1202,7 +1266,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     AND T.DATETIME >= DATE_SUB(?, INTERVAL 45 DAY)
                     $not_in_clause
                  GROUP BY T.RECORD_ID
-                 HAVING ABS(adjusted_amount) > 0
+                 HAVING ABS(adjusted_amount) > 0 $sign_having
                  ORDER BY ABS(DATEDIFF(T.DATETIME, ?)) ASC, T.DATETIME ASC";
         $stmt = $ots_db->prepare($sql);
         if ($stmt) {
@@ -1373,6 +1437,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
     echo json_encode(['status' => 'OK', 'data' => $rows, 'church_name' => $church_name, 'ots_doc' => $ots_doc, 'bank_date' => $bank_date, 'bank_amount' => $bank_amount, 'unmatched_search' => $unmatched_search]);
     exit;
+    } catch (Throwable $e) {
+        echo json_encode(['status' => 'ERROR', 'message' => 'OTS kapcsolati hiba: ' . $e->getMessage()]);
+        exit;
+    }
 }
 
 // AJAX — szöveges aggregációs keresés: a banki közlemény szavaival keres OTS tételeket
@@ -1504,7 +1572,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                  AND T.DATETIME BETWEEN '$start_date' AND '$end_date'
                  AND $like_where
                GROUP BY T.RECORD_ID
-               HAVING ABS(adjusted_amount) > 0
+               HAVING ABS(adjusted_amount) > 0 $sign_having
                ORDER BY T.DATETIME DESC
                LIMIT 100";
 
@@ -1953,12 +2021,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     } else {
         // --- EGY OTS TÉTEL PÁROSÍTÁSA (eredeti működés) ---
         $ots_doc = isset($_POST['ots_doc']) ? mb_substr(trim($_POST['ots_doc']), 0, 50, 'UTF-8') : '';
+        $ots_record_id = isset($_POST['ots_record_id']) ? intval($_POST['ots_record_id']) : 0;
         $ots_date = isset($_POST['ots_date']) ? trim($_POST['ots_date']) : '';
         $ots_date_dt = DateTime::createFromFormat('Y-m-d', $ots_date);
         $ots_date = ($ots_date_dt instanceof DateTime && $ots_date_dt->format('Y-m-d') === $ots_date) ? $ots_date : '';
         $ots_amount = isset($_POST['ots_amount']) ? floatval($_POST['ots_amount']) : 0;
 
-        if (empty($ots_doc)) {
+        if (empty($ots_record_id)) {
             echo json_encode(['status' => 'ERROR', 'message' => 'Nincs kiválasztva OTS tétel']);
             exit;
         }
@@ -2434,19 +2503,20 @@ unset($row);
     <title>Revizor Asszisztens 1.0 – Bankegyeztetés</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body { background-color: #f8f9fa; padding: 10px; padding-bottom: 45px; }
-        .table-container { background: white; padding: 15px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        body { background-color: #f8f9fa; padding: 2px; padding-bottom: 45px; }
+        .table-container { background: white; padding: 5px; border-radius: 6px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
         
         .table-responsive-scroll {
             max-height: 82vh;
             overflow-y: auto;
-            overflow-x: hidden;
+            overflow-x: auto;
             border: 1px solid #dee2e6;
         }
         
         #sortableTable {
-            table-layout: fixed;
-            width: 100%;
+            table-layout: auto;
+            width: auto;
+            min-width: 100%;
         }
 
         .truncate {
@@ -2474,6 +2544,9 @@ unset($row);
         .clickable-amount { cursor: pointer; text-decoration: underline; text-decoration-style: dotted; }
         .clickable-amount:hover { color: #0d6efd !important; background-color: #e9ecef; }
         .status-unchecked { color: #6c757d; font-style: italic; }
+        #sortableTable.table-compact td,
+        #sortableTable.table-compact th { padding: 2px 3px !important; }
+        #sortableTable.table-compact { font-size: 11px; }
         .sort-asc::after { content: " ↑"; font-size: 10px; color: #0d6efd; }
         .sort-desc::after { content: " ↓"; font-size: 10px; color: #0d6efd; }
 
@@ -2615,6 +2688,7 @@ unset($row);
             </button>
             <div class="collapse navbar-collapse position-absolute end-0 top-100" id="actionMenu" style="z-index:1040; min-width:max-content;">
                 <div class="d-flex bg-white border rounded shadow-sm p-1" onclick="var p=document.getElementById('actionMenu'); if(p) p.classList.remove('show');">
+                    <button class="btn btn-outline-secondary btn-sm fw-bold" id="fontSizeBtn" onclick="event.stopPropagation(); toggleFontSize()" title="Betűméret váltása (kicsi/nagy)">🔍−</button>
                     <button class="btn btn-outline-secondary btn-sm fw-bold" onclick="exportTableToCSV()">📥 Export</button>
                     <button class="btn btn-outline-info btn-sm fw-bold" onclick="bulkApproveCsuszas()">✅ Csúszások OK</button>
                     <button class="btn btn-outline-success btn-sm fw-bold" onclick="requireAdminThen(function(){ new bootstrap.Modal(document.getElementById('autoMatchModal')).show(); })">🤖 Auto Párosítás</button>
@@ -2628,20 +2702,20 @@ unset($row);
     <div class="table-responsive-scroll">
         <table class="table table-bordered align-middle m-0" id="sortableTable">
             <colgroup id="colGroup">
-                <col style="width: 9%"><col style="width: 7%"><col style="width: 9%"><col style="width: 16%"><col style="width: 7%"><col style="width: 8%"><col style="width: 14%"><col style="width: 9%"><col style="width: 9%"><col style="width: 11%"><col style="width: 5%">
+                <col><col><col><col><col><col><col><col><col><col><col><col>
             </colgroup>
             <thead>
                 <tr class="main-header">
                     <th style="background-color: #495057 !important;">ADMIN</th>
                     <th colspan="3">BANKI ADATOK (Fix)</th>
-                    <th colspan="4" style="background-color: #495057 !important;">KÖNYVELÉS / OTS (Fix)</th>
+                    <th colspan="5" style="background-color: #495057 !important;">KÖNYVELÉS / OTS (Fix)</th>
                     <th colspan="3" style="background-color: #0d6efd !important;">REVIZOR INTÉZKEDÉS</th>
                 </tr>
                 <tr class="sub-header">
-                    <th style="width: 9%;" onclick="sortTable(0, 'string')">ID / Gyülekezet <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
-                    <th style="width: 7%;" onclick="sortTable(1, 'date')">Dátum <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
+                    <th onclick="sortTable(0, 'string')">ID / Gyülekezet <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
+                    <th onclick="sortTable(1, 'date')">Dátum <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
                     
-                    <th style="width: 9%;" onclick="sortTable(2, 'amount')" 
+                    <th onclick="sortTable(2, 'amount')" 
                         data-bs-toggle="tooltip" 
                         data-bs-placement="top" 
                         data-bs-html="true"
@@ -2650,13 +2724,13 @@ unset($row);
                         <input type="text" class="filter-input" placeholder="Kimenő, bejövő..." onclick="event.stopPropagation();" onkeyup="filterTable()">
                     </th>
                     
-                    <th style="width: 16%;">Közlemény <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
-                    <th style="width: 7%;" onclick="sortTable(4, 'date')">OTS Dátum <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
-                    <th style="width: 8%;">Bizonylat <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
+                    <th>Közlemény <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
+                    <th onclick="sortTable(4, 'date')">OTS Dátum <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
+                    <th>Bizonylat <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
                     
-                    <th style="width: 14%;" onclick="sortTable(6, 'string')">OTS Leírás <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
+                    <th onclick="sortTable(6, 'string')">OTS Leírás <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
                     
-                    <th style="width: 9%;" onclick="sortTable(7, 'amount')"
+                    <th onclick="sortTable(7, 'amount')"
                         data-bs-toggle="tooltip" 
                         data-bs-placement="top" 
                         data-bs-html="true"
@@ -2665,7 +2739,9 @@ unset($row);
                         <input type="text" class="filter-input" placeholder="Kimenő, bejövő..." onclick="event.stopPropagation();" onkeyup="filterTable()">
                     </th>
                     
-                    <th style="width: 9%;" onclick="sortTable(8, 'string')">Státusz 
+                    <th onclick="sortTable(8, 'string')">OTS RID <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
+                    
+                    <th onclick="sortTable(9, 'string')">Státusz 
                         <select class="filter-input" onclick="event.stopPropagation();" onchange="filterTable()">
                             <option value="">Mind</option>
                             <option value="[Feldolgozatlan]">[Feldolgozatlan]</option>
@@ -2676,8 +2752,8 @@ unset($row);
                             <option value="[ÖSSZEVONT]">[ÖSSZEVONT]</option>
                         </select>
                     </th>
-                    <th style="width: 11%;">Megjegyzés rovat <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
-                    <th style="width: 5%;">Akció</th>
+                    <th>Megjegyzés rovat <input type="text" class="filter-input" placeholder="Szűr..." onclick="event.stopPropagation();" onkeyup="filterTable()"></th>
+                    <th>Akció</th>
                 </tr>
             </thead>
             <tbody>
@@ -2778,14 +2854,14 @@ unset($row);
                             <strong>ID: <?php echo $row['church_id']; ?></strong> / <strong>BR: <?php echo $row['id']; ?></strong><br>
                             <?php echo htmlspecialchars($row['church_name'] ?? 'ISMERETLEN'); ?>
                         </td>
-                        <td class="bg-bank text-center" data-val="<?php echo $row['bank_date']; ?>"><?php echo $row['bank_date']; ?></td>
+                        <td class="bg-bank text-center text-nowrap" style="font-size:11px; white-space:nowrap;" data-val="<?php echo $row['bank_date']; ?>"><?php echo $row['bank_date']; ?></td>
                         
-                        <td class="bg-bank text-end fw-bold clickable-amount <?php echo $row['bank_amount'] < 0 ? 'text-danger' : 'text-success'; ?>"
+                        <td class="bg-bank text-end fw-bold clickable-amount small text-nowrap <?php echo $row['bank_amount'] < 0 ? 'text-danger' : 'text-success'; ?>"
                             data-val="<?php echo $row['bank_amount']; ?>" onclick="mutatKombinaltReszleteket(<?php echo htmlspecialchars(json_encode($row)); ?>)">
                             <?php echo number_format($row['bank_amount'], 0, ',', ' '); ?> Ft
                         </td>
                         
-                        <td class="bg-bank text-muted truncate" title="<?php echo htmlspecialchars($row['bank_desc'] ?? ''); ?>" data-val="<?php echo htmlspecialchars($row['bank_desc'] ?? ''); ?>" data-partner="<?php echo htmlspecialchars($row['bank_ext_name'] ?? ''); ?>" data-ref="<?php echo htmlspecialchars($row['bank_ext_ref'] ?? ''); ?>">
+                        <td class="bg-bank text-muted truncate" style="max-width: 180px;" title="<?php echo htmlspecialchars($row['bank_desc'] ?? ''); ?>" data-val="<?php echo htmlspecialchars($row['bank_desc'] ?? ''); ?>" data-partner="<?php echo htmlspecialchars($row['bank_ext_name'] ?? ''); ?>" data-ref="<?php echo htmlspecialchars($row['bank_ext_ref'] ?? ''); ?>">
                             <small><?php echo htmlspecialchars($row['bank_desc'] ?? ''); ?></small>
                         </td>
                         <?php 
@@ -2801,7 +2877,7 @@ unset($row);
                                 } catch (Exception $e) {}
                             }
                         ?>
-                        <td class="bg-ots text-center" data-val="<?php echo $row['ots_date'] ?? '-'; ?>"><span <?php echo $tooltip_attr; ?>><?php echo $row['ots_date'] ?? '-'; ?></span></td>
+                        <td class="bg-ots text-center" style="font-size:11px; white-space:nowrap;" data-val="<?php echo $row['ots_date'] ?? '-'; ?>"><span <?php echo $tooltip_attr; ?>><?php echo $row['ots_date'] ?? '-'; ?></span></td>
                         <td class="bg-ots text-center" data-val="<?php echo htmlspecialchars($row['ots_doc'] ?? '-', ENT_QUOTES, 'UTF-8'); ?>">
                             <?php if ($row['status'] === 'UNCHECKED' || empty($row['ots_doc'])): ?>
                                 <input type="text" id="manual-doc-<?php echo $row['id']; ?>" class="form-control form-control-sm text-center px-1" style="width: 70px; margin: 0 auto;" value="<?php echo htmlspecialchars($row['ots_doc'] ?? ''); ?>" placeholder="Biz.szám" title="Kézi bizonylatszám megadása">
@@ -2809,16 +2885,30 @@ unset($row);
                                 <?php echo htmlspecialchars($row['ots_doc']); ?>
                             <?php endif; ?>
                         </td>
-                        <td class="bg-ots text-muted truncate" title="<?php echo htmlspecialchars($row['ots_desc_full'] ?? ''); ?>" data-val="<?php echo htmlspecialchars($row['ots_desc_full'] ?? ''); ?>">
+                        <td class="bg-ots text-muted truncate" style="max-width: 180px;" title="<?php echo htmlspecialchars($row['ots_desc_full'] ?? ''); ?>" data-val="<?php echo htmlspecialchars($row['ots_desc_full'] ?? ''); ?>">
                             <small><?php echo htmlspecialchars($row['ots_desc_full'] ?? ''); ?></small>
                         </td>
-                        <td class="bg-ots text-end <?php echo !empty($row['ots_amount']) ? 'clickable-amount fw-bold ' . ($row['ots_amount'] < 0 ? 'text-danger' : 'text-success') : 'clickable-amount text-muted fw-light'; ?>" data-val="<?php echo $row['ots_amount'] ?? 0; ?>" onclick="mutatKombinaltReszleteket(<?php echo htmlspecialchars(json_encode($row)); ?>)" style="<?php echo empty($row['ots_amount']) ? 'cursor:pointer;' : ''; ?>">
+                        <td class="bg-ots text-end small text-nowrap <?php echo !empty($row['ots_amount']) ? 'clickable-amount fw-bold ' . ($row['ots_amount'] < 0 ? 'text-danger' : 'text-success') : 'clickable-amount text-muted fw-light'; ?>" style="max-width:120px; <?php echo empty($row['ots_amount']) ? 'cursor:pointer;' : ''; ?>" data-val="<?php echo $row['ots_amount'] ?? 0; ?>" onclick="mutatKombinaltReszleteket(<?php echo htmlspecialchars(json_encode($row)); ?>)">
                             <?php if (!empty($row['item_count']) && $row['item_count'] > 1): ?>
                                 <span title="<?php echo htmlspecialchars($row['item_amounts'] . ' = ' . number_format($row['ots_amount'], 0, ',', ' ') . ' Ft'); ?>">
                                     <?php echo htmlspecialchars($row['item_amounts']); ?> = <?php echo number_format($row['ots_amount'], 0, ',', ' '); ?> Ft
                                 </span>
                             <?php else: ?>
                                 <?php echo $row['ots_amount'] ? number_format($row['ots_amount'], 0, ',', ' ') . ' Ft' : '-'; ?>
+                            <?php endif; ?>
+                        </td>
+                        
+                        <td class="bg-ots text-center small">
+                            <?php if (!empty($row['ots_record_id'])): ?>
+                                <?php
+                                    $rid = (int)$row['ots_record_id'];
+                                    $rid_display = $rid < 0 ? 'TC#' . abs($rid) : '#' . $rid;
+                                ?>
+                                <span class="badge bg-dark" title="OTS Record ID"><?php echo $rid_display; ?></span>
+                            <?php elseif (!empty($row['ots_amount']) && !empty($row['ots_date'])): ?>
+                                <span class="badge bg-warning text-dark" title="Párosítva (régi rekord, ID nélkül)">?</span>
+                            <?php else: ?>
+                                -
                             <?php endif; ?>
                         </td>
                         
@@ -2832,18 +2922,18 @@ unset($row);
                                 <option value="OSSZEVONT" class="text-primary" <?php if($row['status'] == 'OSSZEVONT') echo 'selected'; ?>>[ÖSSZEVONT]</option>
                             </select>
                         </td>
-                        <td>
-                            <input type="text" id="comment-<?php echo $row['id']; ?>" class="form-control form-control-sm <?php echo $is_locked ? 'bg-light text-muted' : ''; ?>" value="<?php echo htmlspecialchars($row['comment'] ?? ''); ?>" <?php echo $is_locked ? 'readonly' : ''; ?>>
+                        <td title="<?php echo htmlspecialchars($row['comment'] ?? ''); ?>">
+                            <input type="text" id="comment-<?php echo $row['id']; ?>" class="form-control form-control-sm <?php echo $is_locked ? 'bg-light' : ''; ?>" style="font-size:11px;" value="<?php echo htmlspecialchars($row['comment'] ?? ''); ?>" <?php echo $is_locked ? 'readonly' : ''; ?>>
                             <?php if (!empty($text_matches_display)) { echo $text_matches_display; } ?>
                         </td>
-                        <td class="text-center">
+                        <td class="text-center text-nowrap" style="font-size:11px;">
                             <?php if ($is_locked): ?>
-                                <button class="btn btn-secondary btn-sm" disabled title="Tökéletes egyezés, írásvédett!">🔒 Kész</button>
+                                <span class="text-muted small">🔒</span>
                             <?php else: ?>
-                                <button class="btn btn-success btn-sm" onclick="saveData(<?php echo $row['id']; ?>)">Mentés</button>
+                                <button class="btn btn-success btn-sm py-0 px-1" style="font-size:11px;" onclick="saveData(<?php echo $row['id']; ?>)" title="Státusz + Megjegyzés mentése">💾</button>
                             <?php endif; ?>
                             <?php if ($row['status'] !== 'UNCHECKED'): ?>
-                                <button class="btn btn-outline-danger btn-sm" onclick="unpairBank(<?php echo $row['id']; ?>) " title="Párosítás bontása — nem párosítottá teszi a tételt (a hozzárendelt OTS tételek felszabadulnak)">✕ Bontás</button>
+                                <button class="btn btn-outline-danger btn-sm py-0 px-1" style="font-size:11px;" onclick="unpairBank(<?php echo $row['id']; ?>)" title="Párosítás bontása">✕</button>
                             <?php endif; ?>
                         </td>
                     </tr>
@@ -3631,10 +3721,10 @@ function filterTable() {
 
                 let colIndex = inputIdx; // Mivel minden oszlopnak van inputja, az indexek stimmelnek
                 let cellValue = "";
-                if (colIndex === 8) { // Státusz oszlop (select)
+                if (colIndex === 9) { // Státusz oszlop (select)
                     const select = row.children[colIndex].querySelector("select");
                     cellValue = select.options[select.selectedIndex].text;
-                } else if (colIndex === 9) { // Megjegyzés oszlop (input)
+                } else if (colIndex === 10) { // Megjegyzés oszlop (input)
                     cellValue = row.children[colIndex].querySelector("input").value;
                 } else {
                     cellValue = row.children[colIndex].textContent || ""; // textContent sokkal gyorsabb, mint az innerText!
@@ -3685,7 +3775,11 @@ function filterTable() {
                     const refData = row.children[colIndex].getAttribute("data-ref");
                     if (refData) searchableText += " " + refData.toLowerCase();
                     
-                    if (!searchableText.includes(query.toLowerCase())) shouldShow = false;
+                    // ÉS logika: minden szónak benne kell lennie (nem kell egymás után állnia)
+                    const words = query.toLowerCase().split(/\s+/).filter(w => w.length > 0);
+                    for (let w = 0; w < words.length; w++) {
+                        if (!searchableText.includes(words[w])) { shouldShow = false; break; }
+                    }
                 }
             });
         }
@@ -3778,6 +3872,27 @@ function saveData(rowId) {
             if (statusValue === 'UNCHECKED' || docValue !== '') { window.location.reload(); } else { filterTable(); }
         } 
     });
+}
+
+// Ugrás a másik banki tételhez a táblában (🔒 badge kattintás)
+function ugrjBankra(ids) {
+    if (!ids) return;
+    var firstId = ids.split(',')[0].trim();
+    var row = document.getElementById('row-' + firstId);
+    if (!row) {
+        alert('BR#' + firstId + ' nem található a táblázatban (lehet, hogy más gyülekezetnél van).');
+        return;
+    }
+    // Modal bezárása
+    var modal = bootstrap.Modal.getInstance(document.getElementById('combinedDetailsModal'));
+    if (modal) modal.hide();
+    // Scroll + highlight
+    setTimeout(function() {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        row.style.outline = '3px solid #dc3545';
+        row.style.outlineOffset = '-2px';
+        setTimeout(function() { row.style.outline = ''; row.style.outlineOffset = ''; }, 3000);
+    }, 300);
 }
 
 // Párosítás bontása: a banki tételt nem párosítottá ([Feldolgozatlan]) teszi,
@@ -3928,15 +4043,33 @@ function mutatKombinaltReszleteket(adatok) {
     fetch('reconciliation.php', { method: 'POST', body: data })
     .then(res => res.json())
     .then(result => {
+        if (result.status === 'ERROR') {
+            otsContainer.innerHTML = '<div class="alert alert-warning">' +
+                '<strong>Hiba:</strong> ' + escapeHtml(result.message || 'Ismeretlen hiba') + '<br>' +
+                '<button class="btn btn-outline-primary btn-sm mt-2" onclick="mutatKombinaltReszleteket(' + JSON.stringify(adatok).replace(/"/g, '&quot;') + ')">🔄 Újra próbálom</button>' +
+                '</div>';
+            return;
+        }
         if (result.status !== 'OK' || !result.data || result.data.length === 0) {
             otsContainer.style.display = 'none';
             document.getElementById('c_ots_empty').style.display = 'block';
             return;
         }
+        if (!result.from_existing && !result.unmatched_search && result.data.length > 0) {
+            const allUsed = result.data.every(tx => tx._used === true || tx._used === 1 || (tx._used_count || 0) > 0);
+            if (allUsed) {
+                loadUnmatched();
+                return;
+            }
+        }
         renderOtsResults(result, adatok);
     })
     .catch(err => {
-        otsContainer.innerHTML = '<div class="alert alert-danger">Hiba az OTS adatok betöltésekor.</div>';
+        otsContainer.innerHTML = '<div class="alert alert-warning">' +
+            '<strong>Hiba az OTS adatok betöltésekor.</strong><br>' +
+            '<small class="text-muted">Lehet, hogy megszakadt a kapcsolat az OTS rendszerrel.</small><br>' +
+            '<button class="btn btn-outline-primary btn-sm mt-2" onclick="mutatKombinaltReszleteket(' + JSON.stringify(adatok).replace(/"/g, '&quot;') + ')">🔄 Újra próbálom</button>' +
+            '</div>';
     });
     } catch (e) { console.error("Hiba a részletek megjelenítésekor:", e); }
 }
@@ -4050,17 +4183,17 @@ function renderOtsResults(result, adatok, keywords) {
             '<h2 class="accordion-header">' +
                     '<button class="accordion-button ' + (collapsed ? 'collapsed' : '') + '" type="button" data-bs-toggle="collapse" data-bs-target="#' + txId + '" aria-expanded="' + (!collapsed) + '">' +
                     (result.from_existing ?
-                    '<span class="badge bg-success me-2">✅ Párosított</span>' :
+                    '<span class="badge bg-success me-1 small" style="font-size:10px; padding:2px 4px;">✅ Párosított</span>' :
                     (isUsed ?
-                    '<span class="badge bg-danger me-2" title="Banki tételek: #' + escapeAttr(tx._used_bank_ids || '') + '">🔒 Már párosítva' + (tx._used_count ? ' (' + tx._used_count + ' banki tétel)' : '') + '</span>' :
+                    '<span class="badge bg-danger me-1 small" style="font-size:10px; padding:2px 4px; cursor:pointer;" title="Banki tételek: #' + escapeAttr(tx._used_bank_ids || '') + '" onclick="event.stopPropagation(); ugrjBankra(\'' + escapeAttr(tx._used_bank_ids || '') + '\')">🔒 ' + (tx._used_bank_ids || '?') + '</span>' :
                     '<input type="radio" name="otsSelect" class="form-check-input me-2 radio-input" value="' + idx + '" data-doc="' + docAttr + '" data-record-id="' + recordIdAttr + '" data-date="' + dateAttr + '" data-amount="' + adjAmount + '" ' + (isExactMatch || isFirst ? 'checked' : '') + ' onclick="event.stopPropagation();">')) +
                     ((result.from_existing || isUsed) ? '' :
                     '<input type="checkbox" class="form-check-input me-2 checkbox-input" data-doc="' + docAttr + '" data-record-id="' + recordIdAttr + '" data-date="' + dateAttr + '" data-amount="' + adjAmount + '" style="display:none;" onchange="event.stopPropagation(); frissitMultiOsszegzo();">') +
                     '<span class="fw-bold me-2">#' + (idx + 1) + '</span>' +
-                    (isExactMatch ? '<span class="badge bg-success me-1">Egyezés</span>' : isAmountMatch ? '<span class="badge bg-warning text-dark me-1">Összeg egyezik</span>' : '') +
-                    (tx.ots_type_name === 'TransfToConf' ? '<span class="badge bg-info text-dark me-1">🏦 TRANSFERS_TO_CONFERENCE</span>' : '') +
-                    '<span class="badge bg-secondary me-2">' + otsDate + '</span>' +
-                    '<span class="' + (adjAmount < 0 ? 'text-danger' : 'text-success') + ' fw-bold me-2">' + otsAmount + '</span>' +
+                    (isExactMatch ? '<span class="badge bg-success me-1 small" style="font-size:10px; padding:2px 4px;">Egyezés</span>' : isAmountMatch ? '<span class="badge bg-warning text-dark me-1 small" style="font-size:10px; padding:2px 4px;">Összeg egyezik</span>' : '') +
+                    (tx.ots_type_name === 'TransfToConf' ? '<span class="badge bg-info text-dark me-1 small" style="font-size:10px; padding:2px 4px;">TC</span>' : '') +
+                    '<span class="badge bg-secondary me-1 small" style="font-size:10px; padding:2px 4px;">' + otsDate + '</span>' +
+                    '<span class="' + (adjAmount < 0 ? 'text-danger' : 'text-success') + ' fw-bold me-2 small">' + otsAmount + '</span>' +
                     '<small class="text-muted text-truncate" style="max-width: 200px;">' + escapeHtml(otsDesc) + '</small>' +
                 '</button>' +
             '</h2>' +
@@ -4086,7 +4219,6 @@ function renderOtsResults(result, adatok, keywords) {
             'PERSON_ID': 'Személy ID',
             'NAME_ID': 'Tranzakció név ID',
             'NAME2_ID': 'Tranzakció név2 ID',
-            'RECORD_ID': 'Record ID',
             'IBAN': 'IBAN',
             'ACCOUNT_NUMBER': 'Számlaszám'
         };
@@ -4151,12 +4283,14 @@ function renderOtsResults(result, adatok, keywords) {
         'összesen: <span id="multiSumAmount">0 Ft</span>' +
         '<span id="multiSumDiff" class="ms-1"></span>' +
     '</div>';
-    html += '<div class="text-center pt-2 pb-1 border-top bg-light" style="position:sticky; bottom:0;">' +
-        '<button class="btn btn-primary btn-sm fw-bold me-2" onclick="saveOtsMatch(' + adatok.id + ', ' + bankAmt + ')">' +
-            '✓ Kiválasztott párosítása' +
-        '</button>' +
-        '<div id="otsSaveMsg" class="mt-1"></div>' +
-    '</div>';
+    if (!result.from_existing) {
+        html += '<div class="text-center pt-2 pb-1 border-top bg-light" style="position:sticky; bottom:0;">' +
+            '<button class="btn btn-primary btn-sm fw-bold me-2" onclick="saveOtsMatch(' + adatok.id + ', ' + bankAmt + ')">' +
+                '✓ Kiválasztott párosítása' +
+            '</button>' +
+            '<div id="otsSaveMsg" class="mt-1"></div>' +
+        '</div>';
+    }
     otsContainer.innerHTML = html;
 
     if (result.unmatched_search) {
@@ -4360,15 +4494,15 @@ function aggregationSearch(customKeywords) {
                 '<h2 class="accordion-header">' +
                     '<button class="accordion-button ' + (isFirst ? '' : 'collapsed') + '" type="button" data-bs-toggle="collapse" data-bs-target="#' + txId + '" aria-expanded="' + isFirst + '">' +
                         (isUsed ?
-                        '<span class="badge bg-danger me-2" title="Banki tételek: #' + escapeAttr(tx._used_bank_ids || '') + '">🔒 Már párosítva' + (tx._used_count ? ' (' + tx._used_count + ' banki tétel)' : '') + '</span>' :
+                        '<span class="badge bg-danger me-1 small" style="font-size:10px; padding:2px 4px;" title="Banki tételek: #' + escapeAttr(tx._used_bank_ids || '') + '">🔒' + (tx._used_count ? ' (' + tx._used_count + ')' : '') + '</span>' :
                         '<input type="radio" name="otsSelect" class="form-check-input me-2 radio-input" value="' + idx + '" data-doc="' + (tx.CASH_DOCUMENT_NUMBER || '') + '" data-record-id="' + recordId + '" data-date="' + (tx.DATETIME || '') + '" data-amount="' + adjAmount + '" ' + (isFirst ? 'checked' : '') + ' onclick="event.stopPropagation();">') +
                         (isUsed ? '' :
                         '<input type="checkbox" class="form-check-input me-2 checkbox-input" data-doc="' + (tx.CASH_DOCUMENT_NUMBER || '') + '" data-record-id="' + recordId + '" data-date="' + (tx.DATETIME || '') + '" data-amount="' + adjAmount + '" style="display:none;" onchange="event.stopPropagation(); frissitMultiOsszegzo();">') +
                         '<span class="fw-bold me-2">#' + (idx + 1) + '</span>' +
-                        (isAmountMatch ? '<span class="badge bg-warning text-dark me-1">Összeg egyezik</span>' : '') +
-                        '<span class="badge bg-info text-dark me-1">' + tx._text_score + '/' + result.keywords.length + '</span>' +
-                        '<span class="badge bg-secondary me-2">' + otsDate + '</span>' +
-                        '<span class="' + (adjAmount < 0 ? 'text-danger' : 'text-success') + ' fw-bold me-2">' + otsAmount + '</span>' +
+                        (isAmountMatch ? '<span class="badge bg-warning text-dark me-1 small" style="font-size:10px; padding:2px 4px;">Összeg egyezik</span>' : '') +
+                        '<span class="badge bg-info text-dark me-1 small" style="font-size:10px; padding:2px 4px;">' + tx._text_score + '/' + result.keywords.length + '</span>' +
+                        '<span class="badge bg-secondary me-1 small" style="font-size:10px; padding:2px 4px;">' + otsDate + '</span>' +
+                        '<span class="' + (adjAmount < 0 ? 'text-danger' : 'text-success') + ' fw-bold me-2 small">' + otsAmount + '</span>' +
                         '<small class="text-muted text-truncate" style="max-width: 200px;">' + otsDesc + '</small>' +
                     '</button>' +
                 '</h2>' +
@@ -4394,7 +4528,6 @@ function aggregationSearch(customKeywords) {
                 'PERSON_ID': 'Személy ID',
                 'NAME_ID': 'Tranzakció név ID',
                 'NAME2_ID': 'Tranzakció név2 ID',
-                'RECORD_ID': 'Record ID',
                 'IBAN': 'IBAN',
                 'ACCOUNT_NUMBER': 'Számlaszám'
             };
@@ -4938,6 +5071,16 @@ function bulkApproveCsuszas() {
     .catch(err => alert('Hiba történt a kérés során: ' + err));
 }
 
+var _fontSizeSmall = false;
+function toggleFontSize() {
+    _fontSizeSmall = !_fontSizeSmall;
+    var table = document.getElementById('sortableTable');
+    if (!table) return;
+    table.classList.toggle('table-compact', _fontSizeSmall);
+    var btn = document.getElementById('fontSizeBtn');
+    if (btn) btn.textContent = _fontSizeSmall ? '🔍+' : '🔍−';
+}
+
 function exportTableToCSV() {
     let csv = [];
     csv.push('\uFEFF'); // UTF-8 BOM kódolás a hibátlan magyar ékezetekhez az Excelben
@@ -5254,8 +5397,13 @@ function extendSession() {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
         body: 'action=keepalive&csrf_token=' + encodeURIComponent(CSRF_TOKEN)
     })
-    .then(r => r.json())
+    .then(r => {
+        if (r.status === 401 || r.status === 403) { window.location.href = 'login.php'; return null; }
+        return r.json();
+    })
     .then(data => {
+        if (!data) return;
+        if (data.error || !data.logged_in) { window.location.href = 'login.php'; return; }
         if (data.remaining) {
             sessionRemaining = data.remaining;
             updateSessionDisplay();
@@ -5266,7 +5414,7 @@ function extendSession() {
             }
         }
     })
-    .catch(() => {})
+    .catch(() => { window.location.href = 'login.php'; })
     .finally(() => { sessionExtending = false; });
 }
 
@@ -5299,7 +5447,7 @@ setInterval(() => {
 // --- Oszlopátméretezés húzással + sessionStorage ---
 (function() {
     var TABLE_ID = 'sortableTable';
-    var STORAGE_KEY = 'revizor_col_widths';
+    var STORAGE_KEY = 'revizor_col_widths_v2';
     var colGroup = document.getElementById('colGroup');
     var cols = colGroup ? colGroup.children : [];
     var headers = document.querySelectorAll('#' + TABLE_ID + ' .sub-header th');

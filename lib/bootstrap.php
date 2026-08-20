@@ -25,9 +25,14 @@ if (session_status() != PHP_SESSION_ACTIVE) {
 
 function get_revizor_conn() {
     static $c = null;
+    $cfg = load_app_config();
+    $db = $cfg['db']['revizor'];
+    if ($c !== null) {
+        if (!$c->ping()) {
+            $c = null;
+        }
+    }
     if ($c === null) {
-        $cfg = load_app_config();
-        $db = $cfg['db']['revizor'];
         $c = new mysqli($db['host'], $db['user'], $db['pass'], $db['name']);
         if ($c->connect_error) { throw new Exception('Revizor DB connection failed: ' . $c->connect_error); }
         $c->set_charset('utf8mb4');
@@ -37,9 +42,14 @@ function get_revizor_conn() {
 
 function get_ots_conn() {
     static $o = null;
+    $cfg = load_app_config();
+    $db = $cfg['db']['ots'];
+    if ($o !== null) {
+        if (!$o->ping()) {
+            $o = null;
+        }
+    }
     if ($o === null) {
-        $cfg = load_app_config();
-        $db = $cfg['db']['ots'];
         $o = new mysqli($db['host'], $db['user'], $db['pass'], $db['name']);
         if ($o->connect_error) { throw new Exception('OTS DB connection failed: ' . $o->connect_error); }
         $o->set_charset('utf8mb4');
