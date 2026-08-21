@@ -605,6 +605,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 
     if ($unmatched && $unmatched->num_rows > 0) {
+        $debug_log = [];
+        $debug_count = 0;
         while ($row = $unmatched->fetch_assoc()) {
             $id = $row['id']; $church_id = $row['church_id']; $bank_date = $row['bank_date']; 
             $bank_amount = $row['bank_amount']; $b_desc = $row['bank_desc']; $b_name = $row['bank_ext_name'];
@@ -644,6 +646,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                         $stmt_ots->bind_param("isss", $church_id, $start_date, $end_date, $bank_date);
                         $stmt_ots->execute();
                         $ots_result = $stmt_ots->get_result();
+                        
+                        if ($debug_count < 5) {
+                            $debug_log[] = [
+                                'pass' => 'text',
+                                'bank_id' => $id,
+                                'church_id' => $church_id,
+                                'bank_date' => $bank_date,
+                                'bank_amount' => $bank_amount,
+                                'bank_desc' => $b_desc,
+                                'bank_ext_name' => $b_name,
+                                'ots_rows' => $ots_result ? $ots_result->num_rows : 0,
+                                'ots_error' => $ots_db->error,
+                                'used_count' => count($used_ots_ids),
+                                'start_date' => $start_date,
+                                'end_date' => $end_date,
+                            ];
+                            $debug_count++;
+                        }
                         
                         $b_text = mb_strtoupper($b_desc . ' ' . $b_name, 'UTF-8');
                         $b_words = preg_split('/[\s,\.\-\/]+/u', $b_text, -1, PREG_SPLIT_NO_EMPTY);
@@ -910,6 +930,24 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
                         $stmt_ots->execute();
                         $ots_result = $stmt_ots->get_result();
                         
+                        if ($debug_count < 5 && $days === 0) {
+                            $debug_log[] = [
+                                'pass' => "num_$days",
+                                'bank_id' => $id,
+                                'church_id' => $church_id,
+                                'bank_date' => $bank_date,
+                                'bank_amount' => $bank_amount,
+                                'bank_desc' => $b_desc,
+                                'bank_ext_name' => $b_name,
+                                'ots_rows' => $ots_result ? $ots_result->num_rows : 0,
+                                'ots_error' => $ots_db->error,
+                                'used_count' => count($used_ots_ids),
+                                'start_date' => $start_date,
+                                'end_date' => $end_date,
+                            ];
+                            $debug_count++;
+                        }
+                        
                         if ($ots_result && $ots_result->num_rows === 1) {
                             $ots_row = $ots_result->fetch_assoc();
                             $ots_date_only = $ots_row['ots_date'] ? substr($ots_row['ots_date'], 0, 10) : null;
@@ -1099,7 +1137,12 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
     }
 
     ob_end_clean();
-    echo json_encode(['status' => 'OK', 'matched' => $total_matched, 'total' => $total_records, 'details' => $stats, 'log_id' => $log_id]);
+    $response = ['status' => 'OK', 'matched' => $total_matched, 'total' => $total_records, 'details' => $stats, 'log_id' => $log_id];
+    if (!empty($debug_log)) {
+        $response['debug'] = $debug_log;
+        @file_put_contents(sys_get_temp_dir() . '/revizor_auto_match_debug.json', json_encode($debug_log, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+    }
+    echo json_encode($response);
     exit;
 
     } catch (Throwable $e) {
