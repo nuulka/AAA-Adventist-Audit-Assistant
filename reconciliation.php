@@ -1082,7 +1082,7 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
     $log_church = $all_churches ? null : $filter_church_id;
     $log_stmt = $conn->prepare("INSERT INTO auto_match_logs (church_id, mode, total_unchecked, matched, details, elapsed_sec, run_by) VALUES (?, ?, ?, ?, ?, ?, ?)");
     $log_details = json_encode($stats);
-    $log_stmt->bind_param("isiids", $log_church, $mode, $total_records, $total_matched, $log_details, $elapsed, $log_user);
+    $log_stmt->bind_param("isiidss", $log_church, $mode, $total_records, $total_matched, $log_details, $elapsed, $log_user);
     $log_stmt->execute();
     $log_id = $log_stmt->insert_id;
 
