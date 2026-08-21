@@ -23,8 +23,15 @@ function ensure_revizor_session_timeout() {
         $_SESSION['revizor_expires_at'] = time() + REVIZOR_SESSION_DURATION;
     }
     if (time() >= $_SESSION['revizor_expires_at']) {
+        $is_post = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST';
+        if ($is_post) {
+            header('Content-Type: application/json');
+            http_response_code(401);
+            echo json_encode(['status' => 'SESSION_EXPIRED', 'message' => 'A munkamenet lejárt. Kérjük, jelentkezzen be újra.']);
+        } else {
+            header('Location: login.php');
+        }
         session_destroy();
-        header('Location: login.php');
         exit;
     }
     return $_SESSION['revizor_expires_at'] - time();

@@ -15,7 +15,14 @@ $_SESSION[GN_LAST_ACTIVE] = time();
 require_once __DIR__ . '/../ots/session_handler.php';
 
 if (!isset($_SESSION[GC_LOGIN_COOKIE])) {
-    header('Location: login.php');
+    $is_post = ($_SERVER['REQUEST_METHOD'] ?? '') === 'POST';
+    if ($is_post) {
+        header('Content-Type: application/json');
+        http_response_code(401);
+        echo json_encode(['status' => 'SESSION_EXPIRED', 'message' => 'A munkamenet lejárt.']);
+    } else {
+        header('Location: login.php');
+    }
     exit;
 }
 
@@ -508,6 +515,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     header('Content-Type: application/json');
     // only admin may run auto-match
     if (!is_admin()) { echo json_encode(['status' => 'ERROR', 'message' => 'Only admin may run auto-match']); exit; }
+    @set_time_limit(300);
 
     $mode = $_POST['match_mode'] ?? 'progressive';
     $custom_days = isset($_POST['custom_days']) ? intval($_POST['custom_days']) : 0;
@@ -1646,6 +1654,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $end_date = !empty($bank_date) ? date('Y-m-d', strtotime("$bank_date +90 days")) : date('Y-m-d', strtotime('+90 days'));
 
     $adjusted_amount_sql = "IF(T.TYPE IN ($exp_types_str), -1 * T.AMOUNT, T.AMOUNT)";
+
+    // Irány szűrés: negatív banki összeg → csak negatív OTS tétel, pozitív → pozitív
+    $sign_having = '';
+    if ($bank_amount < 0) {
+        $sign_having = ' AND adjusted_amount < 0';
+    } elseif ($bank_amount > 0) {
+        $sign_having = ' AND adjusted_amount > 0';
+    }
 
     $base_joins = "FROM TRANSACTIONS T
              LEFT JOIN PERSONS p ON T.PERSON_ID = p.id
@@ -3486,6 +3502,14 @@ unset($row);
 var CSRF_TOKEN = '<?php echo $_SESSION['csrf_token']; ?>';
 var IS_ADMIN = <?= is_admin() ? 'true' : 'false' ?>;
 var AUTO_BANK_ID = <?= $auto_bank_id ?>;
+function checkSession(r) { if (r && r.status === 'SESSION_EXPIRED') { alert(r.message || 'A munkamenet lejárt.'); window.location.href = 'login.php'; return false; } return true; }
+const _origFetch = window.fetch;
+window.fetch = function(url, opts) {
+    return _origFetch.apply(this, arguments).then(function(res) {
+        if (res.status === 401) { alert('A munkamenet lejárt.'); window.location.href = 'login.php'; return res; }
+        return res;
+    });
+};
 var CHURCH_NAME_TO_ID = <?php 
     $name_to_id = [];
     if (isset($church_names_map)) {
@@ -5095,7 +5119,7 @@ function runAutoMatch() {
     let poll = true;
     const pollInterval = 1000;
     const poller = setInterval(() => {
-        fetch('match_progress.php').then(r => r.json()).then(js => {
+        fetch('match_progress.php').then(r => r.text()).then(txt => { try { return JSON.parse(txt); } catch(e) { return null; } }).then(js => {
             if (!js) return;
             if (js.status === 'NONE') { statusEl.innerText = 'Nincs futó párosítás.'; return; }
             if (js.status === 'RUNNING') {
@@ -5110,8 +5134,10 @@ function runAutoMatch() {
     }, pollInterval);
 
     fetch('reconciliation.php', { method: 'POST', body: data })
-    .then(res => res.json())
+    .then(r => r.text())
+    .then(txt => { try { return JSON.parse(txt); } catch(e) { return {status:'ERROR',message:'Invalid JSON'}; } })
     .then(result => {
+        if (!checkSession(result)) return;
         if (result.status === 'OK') {
             let scope = allChurches ? '🌍 Minden gyülekezetre' : '🏛 Kiválasztott gyülekezetre';
             let msg = `🎉 ${scope} kész! ${result.total} feldolgozatlan tételből ${result.matched} db-ot sikerült automatikusan párosítani az OTS-el.\n\n`;
@@ -5131,7 +5157,7 @@ function runAutoMatch() {
             // stop polling and remove status element
             try { clearInterval(poller); } catch(e){}
             const el = document.getElementById('match-progress-status'); if (el) el.remove();
-            window.location.reload(); // Az oldal újratöltésével frissülnek az új adatok és az írásvédelem
+            window.location.reload();
         } else {
             alert('Hiba történt a futtatás során!');
         }
@@ -5267,6 +5293,7 @@ function loadAutoMatchLog() {
     .then(r => r.text())
     .then(txt => { try { return JSON.parse(txt); } catch(e) { return {status:'ERROR',message:'Invalid JSON'}; } })
     .then(res => {
+        if (!checkSession(res)) return;
         if (res.status !== 'OK' || !res.data.length) {
             el.innerHTML = '<div class="text-muted text-center py-3">Még nincs auto-match futás.</div>';
             return;
@@ -5299,8 +5326,10 @@ function showLogDetail(logId) {
     data.append('limit', '1');
     data.append('csrf_token', CSRF_TOKEN);
     fetch('reconciliation.php', { method: 'POST', body: data })
-    .then(r => r.json())
+    .then(r => r.text())
+    .then(txt => { try { return JSON.parse(txt); } catch(e) { return {status:'ERROR',message:'Invalid JSON'}; } })
     .then(res => {
+        if (!checkSession(res)) return;
         if (res.status !== 'OK') return;
         const r = res.data.find(d => d.id == logId);
         if (!r) return;
