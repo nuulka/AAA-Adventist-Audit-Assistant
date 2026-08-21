@@ -1075,17 +1075,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
     $limit = isset($_POST['limit']) ? min(intval($_POST['limit']), 50) : 20;
     $log_filter = isset($_POST['church_id']) ? intval($_POST['church_id']) : 0;
+    $check = @$conn->query("SHOW TABLES LIKE 'auto_match_logs'");
+    if (!$check || $check->num_rows === 0) {
+        $conn->query("CREATE TABLE IF NOT EXISTS auto_match_logs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            run_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            church_id INT DEFAULT NULL,
+            mode VARCHAR(20) DEFAULT 'progressive',
+            total_unchecked INT DEFAULT 0,
+            matched INT DEFAULT 0,
+            details JSON DEFAULT NULL,
+            elapsed_sec DECIMAL(6,2) DEFAULT 0,
+            run_by VARCHAR(100) DEFAULT NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    }
     $sql = "SELECT l.* FROM auto_match_logs l";
     $params = []; $types = '';
     if ($log_filter > 0) { $sql .= " WHERE l.church_id = ?"; $params[] = $log_filter; $types = 'i'; }
     $sql .= " ORDER BY l.run_at DESC LIMIT $limit";
+    $rows = [];
     if (!empty($params)) {
         $stmt = $conn->prepare($sql);
-        $stmt->bind_param($types, ...$params);
-        $stmt->execute();
-        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+        if ($stmt) { $stmt->bind_param($types, ...$params); $stmt->execute(); $res = $stmt->get_result(); if ($res) $rows = $res->fetch_all(MYSQLI_ASSOC); }
     } else {
-        $rows = $conn->query($sql)->fetch_all(MYSQLI_ASSOC);
+        $res = $conn->query($sql);
+        if ($res) $rows = $res->fetch_all(MYSQLI_ASSOC);
     }
     // Gyülekezet nevek betöltése az OTS DB-ből
     $church_names = [];
@@ -5250,7 +5264,8 @@ function loadAutoMatchLog() {
     const churchId = document.querySelector('input[name="church_filter"]')?.value || document.querySelector('select[name="church_filter"]')?.value || 0;
     if (churchId) data.append('church_id', churchId);
     fetch('reconciliation.php', { method: 'POST', body: data })
-    .then(r => r.json())
+    .then(r => r.text())
+    .then(txt => { try { return JSON.parse(txt); } catch(e) { return {status:'ERROR',message:'Invalid JSON'}; } })
     .then(res => {
         if (res.status !== 'OK' || !res.data.length) {
             el.innerHTML = '<div class="text-muted text-center py-3">Még nincs auto-match futás.</div>';
