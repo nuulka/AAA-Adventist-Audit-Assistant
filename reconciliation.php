@@ -45,7 +45,7 @@ $ots_db = get_ots_conn();
 
 // Check if TRANSFERS_TO_CONFERENCE exists in OTS DB (missing on some production servers)
 $has_tc_table = false;
-$tc_check_res = @$ots_db->query("SHOW TABLES LIKE 'transfers_to_conference'");
+$tc_check_res = @$ots_db->query("SHOW TABLES LIKE 'TRANSFERS_TO_CONFERENCE'");
 if ($tc_check_res && $tc_check_res->num_rows > 0) $has_tc_table = true;
 
 log_activity('page_view', ['page' => 'reconciliation']);
@@ -596,7 +596,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                             tc.CASH_DOCUMENT_NUMBER AS ots_doc,
                             tc.id AS tc_id,
                             CONCAT(tc.YEAR, '. ', tc.MONTH, '. havi konferencia utalás') AS ots_desc
-                      FROM transfers_to_conference tc
+                      FROM TRANSFERS_TO_CONFERENCE tc
                       WHERE tc.CHURCH_ID = ?
                         AND tc.VIA_BANK = 1
                         AND tc.AMOUNT = ABS(?)
