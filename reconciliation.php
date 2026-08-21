@@ -620,7 +620,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $used_list = empty($used_ots_ids) ? '0' : implode(',', $used_ots_ids);
 
             if ($debug_count === 0) {
-                @file_put_contents(sys_get_temp_dir() . '/revizor_am_debug.txt', "=== FIRST RECORD ===\nid=$id church_id=$church_id bank_date=$bank_date bank_amount=$bank_amount\nb_desc=" . mb_substr($b_desc,0,100) . "\nb_name=" . mb_substr($b_name,0,100) . "\nused_count=" . count($used_ots_ids) . "\nused_list=" . mb_substr($used_list,0,200) . "\nexp_types_str=$exp_types_str\nots_db_error=" . $ots_db->error . "\n\n");
+                @file_put_contents(sys_get_temp_dir() . '/revizor_am_debug.txt', "=== FIRST RECORD ===\nid=$id church_id=$church_id bank_date=$bank_date bank_amount=$bank_amount\nb_desc=" . mb_substr($b_desc,0,100) . "\nb_name=" . mb_substr($b_name,0,100) . "\nused_count=" . count($used_ots_ids) . "\nexp_types_str=$exp_types_str\nots_db_error=" . $ots_db->error . "\n\n");
             }
 
             foreach ($passes as $days) {
@@ -646,6 +646,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                    GROUP BY RECORD_ID";
                     
                     $stmt_ots = $ots_db->prepare($ots_query);
+                    @file_put_contents(sys_get_temp_dir() . '/revizor_am_debug.txt', "\n--- TEXT PASS ---\nprepare_ok=" . ($stmt_ots ? 'YES' : 'NO') . "\nerror=" . $ots_db->error . "\nerrno=" . $ots_db->errno . "\nquery_len=" . strlen($ots_query) . "\nquery_snippet=" . substr($ots_query, 0, 300) . "\n", FILE_APPEND);
                     if ($stmt_ots) {
                         $stmt_ots->bind_param("isss", $church_id, $start_date, $end_date, $bank_date);
                         $stmt_ots->execute();
