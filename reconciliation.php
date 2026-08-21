@@ -259,6 +259,19 @@ foreach ($ac_new_cols as $ac_col) {
     }
 }
 
+// Auto-match log tábla
+$conn->query("CREATE TABLE IF NOT EXISTS auto_match_logs (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    run_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    church_id INT DEFAULT NULL,
+    mode VARCHAR(20) DEFAULT 'progressive',
+    total_unchecked INT DEFAULT 0,
+    matched INT DEFAULT 0,
+    details JSON DEFAULT NULL,
+    elapsed_sec DECIMAL(6,2) DEFAULT 0,
+    run_by VARCHAR(100) DEFAULT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+
 // OTS Kiadás típusok meghatározása (az előjel helyes számításához)
 $exp_types = [];
 @include_once(__DIR__ . "/../constant.php");
@@ -785,16 +798,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                     continue;
                                 }
                                 
-                                // Dátum irány ellenőrzés: banki kezdeményezésű tételeknél (beszedési díj, jutalék)
-                                // az OTS dátum nem lehet a banki dátum előtt
+                                // Dátum irány ellenőrzés (két irány):
+                                // Bank-first (a,b,f,k): bank_date <= ots_date — ha ots_date < bank_date → skip
+                                // OTS-first (c,g): ots_date <= bank_date — ha ots_date > bank_date → skip
                                 if (!empty($bank_date) && !empty($best_match['ots_date'])) {
                                     $ots_dt = substr($best_match['ots_date'], 0, 10);
                                     $b_desc_lower = mb_strtolower($b_desc, 'UTF-8');
-                                    $is_bank_initiated = (mb_strpos($b_desc_lower, 'beszedés') !== false || mb_strpos($b_desc_lower, 'beszed') !== false
+                                    // Bank-first: költségek, rezsi, tized/adakozás, kamat
+                                    $is_bank_first = (mb_strpos($b_desc_lower, 'beszedés') !== false || mb_strpos($b_desc_lower, 'beszed') !== false
                                         || mb_strpos($b_desc_lower, 'jutalék') !== false || mb_strpos($b_desc_lower, 'kezelési') !== false
-                                        || mb_strpos($b_desc_lower, 'szolgáltatási') !== false);
-                                    if ($is_bank_initiated && $ots_dt < $bank_date) {
-                                        continue; // Banki kezdeményezésű tétel: OTS nem lehet korábbi
+                                        || mb_strpos($b_desc_lower, 'szolgáltatási') !== false
+                                        || mb_strpos($b_desc_lower, 'könyvelés') !== false
+                                        || mb_strpos($b_desc_lower, 'tized') !== false
+                                        || mb_strpos($b_desc_lower, 'adomány') !== false || mb_strpos($b_desc_lower, 'adak') !== false
+                                        || mb_strpos($b_desc_lower, 'kamat') !== false);
+                                    // OTS-first: AT havi zárás (kedvezményezett = TET számla) vagy készpénz befizetés
+                                    $clean_ext_acc = preg_replace('/[^0-9]/', '', $bank_ext_acc);
+                                    $b_name_lower = mb_strtolower($b_name ?? '', 'UTF-8');
+                                    $is_ots_first = ($bank_amount < 0 && in_array($clean_ext_acc, ['1178400922224138', '104003395049575053561009']))
+                                        || ($bank_amount > 0 && (mb_strpos($b_desc_lower, 'készpénz befizetés') !== false || mb_strpos($b_name_lower, 'készpénz befizetés') !== false));
+                                    if ($is_bank_first && $ots_dt < $bank_date) {
+                                        continue; // Bank-first: OTS nem lehet korábbi
+                                    }
+                                    if ($is_ots_first && $ots_dt > $bank_date) {
+                                        continue; // OTS-first: OTS nem lehet későbbi
                                     }
                                 }
                                 
@@ -864,13 +891,26 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
                             $ots_doc_clean = $ots_row['ots_doc'] ?? '';
                             if ($ots_doc_clean === '0000') $ots_doc_clean = '';
                             
-                            // Dátum irány ellenőrzés: banki kezdeményezésű tételeknél az OTS nem lehet korábbi
+                            // Dátum irány ellenőrzés (két irány):
                             $b_desc_lower2 = mb_strtolower($b_desc, 'UTF-8');
-                            $is_bank_init2 = (mb_strpos($b_desc_lower2, 'beszedés') !== false || mb_strpos($b_desc_lower2, 'beszed') !== false
+                            $is_bank_first2 = (mb_strpos($b_desc_lower2, 'beszedés') !== false || mb_strpos($b_desc_lower2, 'beszed') !== false
                                 || mb_strpos($b_desc_lower2, 'jutalék') !== false || mb_strpos($b_desc_lower2, 'kezelési') !== false
-                                || mb_strpos($b_desc_lower2, 'szolgáltatási') !== false);
-                            if ($is_bank_init2 && !empty($ots_date_only) && !empty($bank_date) && $ots_date_only < $bank_date) {
-                                // Banki kezdeményezésű tétel: OTS nem lehet korábbi
+                                || mb_strpos($b_desc_lower2, 'szolgáltatási') !== false
+                                || mb_strpos($b_desc_lower2, 'könyvelés') !== false
+                                || mb_strpos($b_desc_lower2, 'tized') !== false
+                                || mb_strpos($b_desc_lower2, 'adomány') !== false || mb_strpos($b_desc_lower2, 'adak') !== false
+                                || mb_strpos($b_desc_lower2, 'kamat') !== false);
+                            $clean_ext_acc2 = preg_replace('/[^0-9]/', '', $bank_ext_acc);
+                            $b_name_lower2 = mb_strtolower($b_name ?? '', 'UTF-8');
+                            $is_ots_first2 = ($bank_amount < 0 && in_array($clean_ext_acc2, ['1178400922224138', '104003395049575053561009']))
+                                || ($bank_amount > 0 && (mb_strpos($b_desc_lower2, 'készpénz befizetés') !== false || mb_strpos($b_name_lower2, 'készpénz befizetés') !== false));
+                            $skip_date = false;
+                            if (!empty($ots_date_only) && !empty($bank_date)) {
+                                if ($is_bank_first2 && $ots_date_only < $bank_date) $skip_date = true;
+                                if ($is_ots_first2 && $ots_date_only > $bank_date) $skip_date = true;
+                            }
+                            if ($skip_date) {
+                                // Dátum irány sérülés: nem párosítjuk
                             } else {
                             
                             // 40 napos duplikátumszűrő: ha ugyanaz az összeg + hasonló közlemény más napon is előfordul 40 napon belül
@@ -1013,7 +1053,51 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
     $elapsed = round(microtime(true) - $start_time, 2);
     @file_put_contents($progress_file, json_encode(['status'=>'DONE','matched'=>$total_matched,'total_unchecked'=>$total_records,'current_church'=>null,'processed_churches'=>0,'processed_records'=>$processed_records,'time_sec'=>$elapsed]));
     register_shutdown_function(function() use ($progress_file){ if (file_exists($progress_file)) @unlink($progress_file); });
-    echo json_encode(['status' => 'OK', 'matched' => $total_matched, 'total' => $total_records, 'details' => $stats]);
+
+    // Log mentése
+    $log_user = $_SESSION['user_name'] ?? ($_SESSION['username'] ?? 'unknown');
+    $log_church = $all_churches ? null : $filter_church_id;
+    $log_stmt = $conn->prepare("INSERT INTO auto_match_logs (church_id, mode, total_unchecked, matched, details, elapsed_sec, run_by) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    $log_details = json_encode($stats);
+    $log_stmt->bind_param("isiids", $log_church, $mode, $total_records, $total_matched, $log_details, $elapsed, $log_user);
+    $log_stmt->execute();
+    $log_id = $log_stmt->insert_id;
+
+    echo json_encode(['status' => 'OK', 'matched' => $total_matched, 'total' => $total_records, 'details' => $stats, 'log_id' => $log_id]);
+    exit;
+}
+
+// AJAX: Auto-match napló lekérése
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'get_auto_match_log') {
+    header('Content-Type: application/json');
+    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token'])) {
+        echo json_encode(['status' => 'ERROR', 'message' => 'CSRF token mismatch']); exit;
+    }
+    $limit = isset($_POST['limit']) ? min(intval($_POST['limit']), 50) : 20;
+    $log_filter = isset($_POST['church_id']) ? intval($_POST['church_id']) : 0;
+    $sql = "SELECT l.* FROM auto_match_logs l";
+    $params = []; $types = '';
+    if ($log_filter > 0) { $sql .= " WHERE l.church_id = ?"; $params[] = $log_filter; $types = 'i'; }
+    $sql .= " ORDER BY l.run_at DESC LIMIT $limit";
+    if (!empty($params)) {
+        $stmt = $conn->prepare($sql);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $rows = $stmt->get_result()->fetch_all(MYSQLI_ASSOC);
+    } else {
+        $rows = $conn->query($sql)->fetch_all(MYSQLI_ASSOC);
+    }
+    // Gyülekezet nevek betöltése az OTS DB-ből
+    $church_names = [];
+    if (!empty($ots_db)) {
+        $cn_res = $ots_db->query("SELECT ID, NAME FROM churches WHERE ID > 0");
+        if ($cn_res) { while ($cn = $cn_res->fetch_assoc()) { $church_names[(int)$cn['ID']] = $cn['NAME']; } }
+    }
+    foreach ($rows as &$r) {
+        $cid = (int)($r['church_id'] ?? 0);
+        $r['church_name'] = $cid > 0 ? ($church_names[$cid] ?? "#$cid") : 'Minden';
+    }
+    echo json_encode(['status' => 'OK', 'data' => $rows]);
     exit;
 }
 
@@ -1233,7 +1317,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     if ($unmatched_search) {
         // Párosítatlan keresés: minden OTS tétel a gyülekezetre +/- 70 napban, ami még nincs felhasználva
         // Banki költségeknél (pl. "Csoportos beszedés díja") nincs értelme a banki dátum előtti OTS tételt keresni
-        $fee_keywords = ['díj', 'költség', 'jutalék', 'banki', 'kezelési', 'szolgáltatási'];
+        $fee_keywords = ['díj', 'költség', 'jutalék', 'banki', 'kezelési', 'szolgáltatási', 'könyvelés', 'kamat'];
         $is_fee = false;
         $fee_search_text = mb_strtolower($bank_desc . ' ' . $bank_ext_name, 'UTF-8');
         foreach ($fee_keywords as $kw) {
@@ -1535,7 +1619,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $like_where = '(' . implode(' OR ', $like_literals) . ')';
 
     // Dátumablak: ±90 nap (banki költségnél csak +90 nap)
-    $fee_keywords = ['díj', 'költség', 'jutalék', 'banki', 'kezelési', 'szolgáltatási'];
+    $fee_keywords = ['díj', 'költség', 'jutalék', 'banki', 'kezelési', 'szolgáltatási', 'könyvelés', 'kamat'];
     $is_fee = false;
     $fee_search_text = mb_strtolower($bank_desc . ' ' . $bank_ext_name, 'UTF-8');
     foreach ($fee_keywords as $kw) {
@@ -2692,6 +2776,7 @@ unset($row);
                     <button class="btn btn-outline-secondary btn-sm fw-bold" onclick="exportTableToCSV()">📥 Export</button>
                     <button class="btn btn-outline-info btn-sm fw-bold" onclick="bulkApproveCsuszas()">✅ Csúszások OK</button>
                     <button class="btn btn-outline-success btn-sm fw-bold" onclick="requireAdminThen(function(){ new bootstrap.Modal(document.getElementById('autoMatchModal')).show(); })">🤖 Auto Párosítás</button>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="requireAdminThen(function(){ loadAutoMatchLog(); new bootstrap.Modal(document.getElementById('autoMatchLogModal')).show(); })" title="Auto-match futási napló">📋 Log</button>
                     <button class="btn btn-outline-warning btn-sm fw-bold" onclick="openCustomPatterns()">🔧 Kulcsszavak</button>
                     <a href="logout.php" class="btn btn-outline-danger btn-sm">Kilépés</a>
                 </div>
@@ -3318,6 +3403,21 @@ unset($row);
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Mégse</button>
             <button type="button" class="btn btn-success fw-bold" onclick="runAutoMatch()" id="btnRunMatch">🚀 Futtatás</button>
         </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Auto-Match Log Modal -->
+<div class="modal fade" id="autoMatchLogModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header bg-secondary text-white">
+        <h5 class="modal-title">📋 Auto-match futási napló</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body p-2" style="max-height: 60vh; overflow-y: auto;">
+        <div id="autoMatchLogContent" class="text-muted small">Betöltés...</div>
       </div>
     </div>
   </div>
@@ -5136,6 +5236,86 @@ function showPerPageLoading(form) {
         document.getElementById('perPageTimer').innerText = ((Date.now() - start) / 1000).toFixed(1) + 's';
     }, 100);
     form.submit();
+}
+
+// --- AUTO-MATCH LOG ---
+function loadAutoMatchLog() {
+    const el = document.getElementById('autoMatchLogContent');
+    if (!el) return;
+    el.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Betöltés...';
+    const data = new FormData();
+    data.append('action', 'get_auto_match_log');
+    data.append('limit', '30');
+    data.append('csrf_token', CSRF_TOKEN);
+    const churchId = document.querySelector('input[name="church_filter"]')?.value || document.querySelector('select[name="church_filter"]')?.value || 0;
+    if (churchId) data.append('church_id', churchId);
+    fetch('reconciliation.php', { method: 'POST', body: data })
+    .then(r => r.json())
+    .then(res => {
+        if (res.status !== 'OK' || !res.data.length) {
+            el.innerHTML = '<div class="text-muted text-center py-3">Még nincs auto-match futás.</div>';
+            return;
+        }
+        let html = '<table class="table table-sm table-hover align-middle mb-0" style="font-size: 12px;">';
+        html += '<thead><tr class="table-light"><th>Dátum</th><th>Gyülekezet</th><th>Mód</th><th>Feldolgozatlan</th><th>Párosítva</th><th>Idő</th><th>Futtatta</th></tr></thead><tbody>';
+        res.data.forEach(r => {
+            const dt = r.run_at ? new Date(r.run_at).toLocaleString('hu-HU') : '-';
+            const ch = r.church_name || (r.church_id ? '#' + r.church_id : '🌍 Minden');
+            const mode = r.mode === 'progressive' ? 'Progresszív' : (r.mode === 'custom' ? 'Egyedi' : r.mode);
+            const pct = r.total_unchecked > 0 ? Math.round(r.matched / r.total_unchecked * 100) : 0;
+            html += `<tr style="cursor:pointer" onclick="showLogDetail(${r.id})" title="Részletek megtekintése">`;
+            html += `<td class="text-nowrap">${dt}</td>`;
+            html += `<td>${ch}</td>`;
+            html += `<td>${mode}</td>`;
+            html += `<td>${r.total_unchecked}</td>`;
+            html += `<td><span class="fw-bold">${r.matched}</span> <span class="text-muted">(${pct}%)</span></td>`;
+            html += `<td>${r.elapsed_sec}s</td>`;
+            html += `<td>${r.run_by || '-'}</td>`;
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        el.innerHTML = html;
+    })
+    .catch(err => { el.innerHTML = '<div class="text-danger">Hiba: ' + err.message + '</div>'; });
+}
+function showLogDetail(logId) {
+    const data = new FormData();
+    data.append('action', 'get_auto_match_log');
+    data.append('limit', '1');
+    data.append('csrf_token', CSRF_TOKEN);
+    fetch('reconciliation.php', { method: 'POST', body: data })
+    .then(r => r.json())
+    .then(res => {
+        if (res.status !== 'OK') return;
+        const r = res.data.find(d => d.id == logId);
+        if (!r) return;
+        const details = typeof r.details === 'string' ? JSON.parse(r.details) : r.details;
+        let html = '<div class="p-3">';
+        html += `<h6>Futás: ${r.run_at ? new Date(r.run_at).toLocaleString('hu-HU') : '#' + r.id}</h6>`;
+        html += `<table class="table table-sm" style="font-size: 12px;">`;
+        html += `<tr><td>Gyülekezet</td><td>${r.church_name || (r.church_id ? '#' + r.church_id : 'Minden')}</td></tr>`;
+        html += `<tr><td>Mód</td><td>${r.mode}</td></tr>`;
+        html += `<tr><td>Feldolgozatlan</td><td>${r.total_unchecked}</td></tr>`;
+        html += `<tr><td>Párosítva</td><td class="fw-bold text-success">${r.matched}</td></tr>`;
+        html += `<tr><td>Időtartam</td><td>${r.elapsed_sec}s</td></tr>`;
+        html += `<tr><td>Futtatta</td><td>${r.run_by || '-'}</td></tr>`;
+        html += '</table>';
+        if (details) {
+            html += '<h6>Részletek:</h6><ul class="list-unstyled" style="font-size:12px;">';
+            if (details.pass_0) html += `<li>🔒 0 nap (írásvédett): <strong>${details.pass_0}</strong></li>`;
+            if (details.pass_3) html += `<li>⏱️ 3 nap: ${details.pass_3}</li>`;
+            if (details.pass_6) html += `<li>⏱️ 6 nap: ${details.pass_6}</li>`;
+            if (details.pass_12) html += `<li>⏱️ 12 nap: ${details.pass_12}</li>`;
+            if (details.pass_35) html += `<li>⏱️ 35 nap: ${details.pass_35}</li>`;
+            if (details.pass_60) html += `<li>⏱️ 60 nap: ${details.pass_60}</li>`;
+            if (details.pass_text) html += `<li>🔎 Szöveges: ${details.pass_text}</li>`;
+            if (details.pass_tc) html += `<li>🏢 TC: ${details.pass_tc}</li>`;
+            if (details.custom) html += `<li>🎯 Egyedi: ${details.custom}</li>`;
+            html += '</ul>';
+        }
+        html += '</div>';
+        document.getElementById('autoMatchLogContent').innerHTML = html;
+    });
 }
 
 // --- CUSTOM PATTERNS ---
