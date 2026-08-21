@@ -31,7 +31,19 @@
 1. Upload: ±5 day, exact amount, PERIOD_DIFF month check
 2. Progressive pass 0 (0 day): exact date match, 40-day dedup
 3. Pass 3–60: widening date window
-4. Text pass: keyword scoring, min score 10
+4. Text pass: keyword scoring, min score 2
+
+## Date Rule Enforcement (is_bank_first / is_ots_first)
+- Checked in BOTH text pass and numeric passes (3,6,12,35,60)
+- `is_bank_first`: checks bank_desc AND bank_ext_name for keywords (see below)
+- `is_ots_first`: checks bank_amount < 0 AND bank_ext_acc IN TET accounts, OR készpénz befizetés in desc/ext_name
+- bank_first violations: OTS date < bank date → SKIP
+- ots_first violations: OTS date > bank date → SKIP
+- **Bank-first keywords** (must match in bank_desc or bank_ext_name):
+  - a) Költségek: `beszedés`, `beszed`, `jutalék`, `kezelési`, `szolgáltatási`, `könyvelés`
+  - b) Rezsi: `villanys`, `gáz`, `víz`, `fűtés`, `rezsi`, `mvm`, `eon`, `nkm`, `főgáz`, `telem`, `nhkv`, `mivíz`, `alföld` (regex)
+  - f) Tized/adakozás: `tized`, `adomány`, `adak`
+  - k) Kamat: `kamat`
 
 ## Security Requirements
 - Every POST handler validates `$_POST['csrf_token']` against `$_SESSION['csrf_token']`

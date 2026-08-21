@@ -47,12 +47,13 @@ OTS bank reconciliation automation tool. Matches bank CSV statements against OTS
 - **Progressive passes**: [0, 3, 6, 12, 35, 60] days + text pass
   - Pass 0: exact date match, 40-day dedup, write-protected with "[Auto: 100% egyezés, 0 nap]"
   - Passes 3–60: widening date window
-- **Text pass**: keyword scoring (shared words +1 max 3, provider_keywords +2, custom_patterns +3), min score 10
+- **Text pass**: keyword scoring (shared words +1 max 3, provider_keywords +2, custom_patterns +3), min score 2
 - **transfers_to_conference**: multi-item grouping by `conference_id` via `bank_reconciliation_items`, matched with `ABS(?)` for signed amounts, ±45 day window
 - **Expense type IDs**: 7, 9, 20 (negate in SUM)
 - **Duplicate filter**: 40-day window, same amount + same desc prefix (80 chars)
 - **OTS exclusion**: `RECORD_ID NOT IN (SELECT ots_record_id FROM bank_reconciliation UNION SELECT record_id FROM bank_reconciliation_items)`
 - **Dátum sanity check**: progressive passes skip if date diff > 30 days; unmatched search popup allows up to 45 days (legacy), warns at 46–70 with confirmation
+- **Date rule enforcement**: `is_bank_first` (bank ≤ OTS) checks both bank_desc AND bank_ext_name for rezsi/provider keywords (MVM, EON, villanyszámla, gáz, víz, etc.); `is_ots_first` (OTS ≤ bank) checks TET accounts + készpénz befizetés
 
 ## UI Features
 - **Navbar**: Title row 1 (left), Kezdőlap + church autocomplete filter row 2 (left), right-side hamburger menu with all action buttons
@@ -78,3 +79,6 @@ OTS bank reconciliation automation tool. Matches bank CSV statements against OTS
 - **Session lock**: long-running auto_match blocks other AJAX — call `session_write_close()` before heavy loops
 - **Progress file**: auto-match writes progress to `tmp/auto_match_progress_{church_id}.json` for real-time UI updates
 - **Search.php**: `GROUP BY` + `HAVING` on aliased expression requires proper subquery aliasing
+- **Production OTS DB**: `transfers_to_conference` table exists but verify with `$has_tc_table` guard (case-sensitive table names on Linux: `TRANSFERS_TO_CONFERENCE` not `transfers_to_conference`)
+- **bind_param type string**: length MUST match number of bind variables exactly — PHP 8.1 throws `mysqli_sql_exception` on mismatch
+- **JSON columns**: MySQL JSON type strict on production — use TEXT for flexible columns (e.g. `auto_match_logs.details`)

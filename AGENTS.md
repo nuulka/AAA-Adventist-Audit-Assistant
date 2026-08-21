@@ -44,12 +44,24 @@ Church audit application for Seventh-day Adventist churches in Hungary. PHP + My
 | Bevétel (+) | h) Egyéb | — | nincs szabály |
 | Bevétel (+) | k) Kamat | kamat | bank ≤ OTS |
 
+### Date Detection Keywords in Code
+**Bank-first (bank ≤ OTS)**: `$is_bank_first` checks both `$b_desc_lower` (bank_desc) AND `$b_name_lower` (bank_ext_name):
+- a) Költségek: `beszedés`, `beszed`, `jutalék`, `kezelési`, `szolgáltatási`, `könyvelés`
+- b) Rezsi: `villanys`, `gáz/gaz`, `víz`, `fűtés/futes`, `rezsi`, `szolgáltat/szolgaltat`, `csop. beszed`, `mvm`, `eon`, `nkm`, `főgáz/fogaz`, `telem`, `nhkv`, `mivíz`, `alföld` (regex)
+- f) Tized/adakozás: `tized`, `adomány`, `adak`
+- k) Kamat: `kamat`
+
+**OTS-first (OTS ≤ bank)**: `$is_ots_first` checks:
+- c) AT havi zárás: `$bank_amount < 0 && bank_ext_acc IN TET accounts`
+- g) Készpénz befizetés: `bank_desc OR bank_ext_name contains "készpénz befizetés"`
+
 ## Code Conventions
 - PHP 8.1+ — always check for `mysqli_sql_exception` on missing tables (returns exception, not false)
 - Always use `ob_start()`/`ob_end_clean()` in AJAX handlers to capture PHP warnings
 - Always wrap AJAX logic in `try/catch(Throwable)` returning JSON error on exception
 - All `r.json()` calls in JS must use `r.text()` + try-catch `JSON.parse()` for resilience
 - Session expiry: POST → return `401 + {"status":"SESSION_EXPIRED"}` JSON, GET → `Location:` redirect
+- MySQL `bind_param` type string length MUST match the number of bind variables exactly
 
 ## Git
 - Remote: `https://github.com/nuulka/AAA-Adventist-Audit-Assistant.git` (origin/main)
