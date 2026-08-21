@@ -827,17 +827,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 if (!empty($bank_date) && !empty($best_match['ots_date'])) {
                                     $ots_dt = substr($best_match['ots_date'], 0, 10);
                                     $b_desc_lower = mb_strtolower($b_desc, 'UTF-8');
-                                    // Bank-first: költségek, rezsi, tized/adakozás, kamat
+                                    $b_name_lower = mb_strtolower($b_name ?? '', 'UTF-8');
+                                    // Bank-first: a) költségek, b) rezsi/szolgáltatói, f) tized/adakozás, k) kamat
                                     $is_bank_first = (mb_strpos($b_desc_lower, 'beszedés') !== false || mb_strpos($b_desc_lower, 'beszed') !== false
                                         || mb_strpos($b_desc_lower, 'jutalék') !== false || mb_strpos($b_desc_lower, 'kezelési') !== false
                                         || mb_strpos($b_desc_lower, 'szolgáltatási') !== false
                                         || mb_strpos($b_desc_lower, 'könyvelés') !== false
                                         || mb_strpos($b_desc_lower, 'tized') !== false
                                         || mb_strpos($b_desc_lower, 'adomány') !== false || mb_strpos($b_desc_lower, 'adak') !== false
-                                        || mb_strpos($b_desc_lower, 'kamat') !== false);
+                                        || mb_strpos($b_desc_lower, 'kamat') !== false
+                                        || preg_match('/villanys|g[áa]z|víz|f[őo]t[ée]s|rezsi|szolg[áa]ltat|csop\.\s*beszed|mvm|eon|nkm|f[őo]g[áa]z|telem|nhkv|mivíz|alföld/i', $b_desc_lower)
+                                        || preg_match('/villanys|g[áa]z|víz|f[őo]t[ée]s|rezsi|szolg[áa]ltat|csop\.\s*beszed|mvm|eon|nkm|f[őo]g[áa]z|telem|nhkv|mivíz|alföld/i', $b_name_lower));
                                     // OTS-first: AT havi zárás (kedvezményezett = TET számla) vagy készpénz befizetés
                                     $clean_ext_acc = preg_replace('/[^0-9]/', '', $bank_ext_acc);
-                                    $b_name_lower = mb_strtolower($b_name ?? '', 'UTF-8');
                                     $is_ots_first = ($bank_amount < 0 && in_array($clean_ext_acc, ['1178400922224138', '104003395049575053561009']))
                                         || ($bank_amount > 0 && (mb_strpos($b_desc_lower, 'készpénz befizetés') !== false || mb_strpos($b_name_lower, 'készpénz befizetés') !== false));
                                     if ($is_bank_first && $ots_dt < $bank_date) {
@@ -916,15 +918,18 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
                             
                             // Dátum irány ellenőrzés (két irány):
                             $b_desc_lower2 = mb_strtolower($b_desc, 'UTF-8');
+                            $b_name_lower2 = mb_strtolower($b_name ?? '', 'UTF-8');
+                            // Bank-first: a) költségek, b) rezsi/szolgáltatói, f) tized/adakozás, k) kamat
                             $is_bank_first2 = (mb_strpos($b_desc_lower2, 'beszedés') !== false || mb_strpos($b_desc_lower2, 'beszed') !== false
                                 || mb_strpos($b_desc_lower2, 'jutalék') !== false || mb_strpos($b_desc_lower2, 'kezelési') !== false
                                 || mb_strpos($b_desc_lower2, 'szolgáltatási') !== false
                                 || mb_strpos($b_desc_lower2, 'könyvelés') !== false
                                 || mb_strpos($b_desc_lower2, 'tized') !== false
                                 || mb_strpos($b_desc_lower2, 'adomány') !== false || mb_strpos($b_desc_lower2, 'adak') !== false
-                                || mb_strpos($b_desc_lower2, 'kamat') !== false);
+                                || mb_strpos($b_desc_lower2, 'kamat') !== false
+                                || preg_match('/villanys|g[áa]z|víz|f[őo]t[ée]s|rezsi|szolg[áa]ltat|csop\.\s*beszed|mvm|eon|nkm|f[őo]g[áa]z|telem|nhkv|mivíz|alföld/i', $b_desc_lower2)
+                                || preg_match('/villanys|g[áa]z|víz|f[őo]t[ée]s|rezsi|szolg[áa]ltat|csop\.\s*beszed|mvm|eon|nkm|f[őo]g[áa]z|telem|nhkv|mivíz|alföld/i', $b_name_lower2));
                             $clean_ext_acc2 = preg_replace('/[^0-9]/', '', $bank_ext_acc);
-                            $b_name_lower2 = mb_strtolower($b_name ?? '', 'UTF-8');
                             $is_ots_first2 = ($bank_amount < 0 && in_array($clean_ext_acc2, ['1178400922224138', '104003395049575053561009']))
                                 || ($bank_amount > 0 && (mb_strpos($b_desc_lower2, 'készpénz befizetés') !== false || mb_strpos($b_name_lower2, 'készpénz befizetés') !== false));
                             $skip_date = false;
