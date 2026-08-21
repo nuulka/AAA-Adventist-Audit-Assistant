@@ -1083,13 +1083,20 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
     register_shutdown_function(function() use ($progress_file){ if (file_exists($progress_file)) @unlink($progress_file); });
 
     // Log mentése
-    $log_user = $_SESSION['user_name'] ?? ($_SESSION['username'] ?? 'unknown');
-    $log_church = $all_churches ? null : $filter_church_id;
-    $log_stmt = $conn->prepare("INSERT INTO auto_match_logs (church_id, mode, total_unchecked, matched, details, elapsed_sec, run_by) VALUES (?, ?, ?, ?, ?, ?, ?)");
-    $log_details = json_encode($stats, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) ?: '{}';
-    $log_stmt->bind_param("isiidss", $log_church, $mode, $total_records, $total_matched, $log_details, $elapsed, $log_user);
-    $log_stmt->execute();
-    $log_id = $log_stmt->insert_id;
+    try {
+        $log_user = $_SESSION['user_name'] ?? ($_SESSION['username'] ?? 'unknown');
+        $log_church = $all_churches ? null : $filter_church_id;
+        $log_details = is_array($stats) ? json_encode($stats, JSON_UNESCAPED_UNICODE | JSON_HEX_TAG) : '{}';
+        if ($log_details === false || $log_details === '') $log_details = '{}';
+        $log_stmt = $conn->prepare("INSERT INTO auto_match_logs (church_id, mode, total_unchecked, matched, details, elapsed_sec, run_by) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        if ($log_stmt) {
+            $log_stmt->bind_param("isiidss", $log_church, $mode, $total_records, $total_matched, $log_details, $elapsed, $log_user);
+            $log_stmt->execute();
+            $log_id = $log_stmt->insert_id;
+        }
+    } catch (Throwable $e) {
+        $log_id = 0;
+    }
 
     ob_end_clean();
     echo json_encode(['status' => 'OK', 'matched' => $total_matched, 'total' => $total_records, 'details' => $stats, 'log_id' => $log_id]);
