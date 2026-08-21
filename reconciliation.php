@@ -654,18 +654,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                                 'church_id' => $church_id,
                                 'bank_date' => $bank_date,
                                 'bank_amount' => $bank_amount,
-                                'bank_desc' => $b_desc,
-                                'bank_ext_name' => $b_name,
+                                'bank_desc' => mb_substr($b_desc, 0, 60, 'UTF-8'),
+                                'bank_ext_name' => mb_substr($b_name, 0, 60, 'UTF-8'),
                                 'ots_rows' => $ots_result ? $ots_result->num_rows : 0,
                                 'ots_error' => $ots_db->error,
+                                'ots_errno' => $ots_db->errno,
                                 'used_count' => count($used_ots_ids),
                                 'start_date' => $start_date,
                                 'end_date' => $end_date,
                             ];
                             $debug_count++;
                         }
-                        
-                        $b_text = mb_strtoupper($b_desc . ' ' . $b_name, 'UTF-8');
+                    $b_text = mb_strtoupper($b_desc . ' ' . $b_name, 'UTF-8');
                         $b_words = preg_split('/[\s,\.\-\/]+/u', $b_text, -1, PREG_SPLIT_NO_EMPTY);
                         
                         // Rezsi / közüzemi kulcsszó csoportok
@@ -937,10 +937,11 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
                                 'church_id' => $church_id,
                                 'bank_date' => $bank_date,
                                 'bank_amount' => $bank_amount,
-                                'bank_desc' => $b_desc,
-                                'bank_ext_name' => $b_name,
+                                'bank_desc' => mb_substr($b_desc, 0, 60, 'UTF-8'),
+                                'bank_ext_name' => mb_substr($b_name, 0, 60, 'UTF-8'),
                                 'ots_rows' => $ots_result ? $ots_result->num_rows : 0,
                                 'ots_error' => $ots_db->error,
+                                'ots_errno' => $ots_db->errno,
                                 'used_count' => count($used_ots_ids),
                                 'start_date' => $start_date,
                                 'end_date' => $end_date,
