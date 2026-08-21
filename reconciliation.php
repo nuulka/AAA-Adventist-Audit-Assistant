@@ -619,6 +619,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             if ($used_res) { while ($u = $used_res->fetch_assoc()) { $used_ots_ids[] = (int)($u['ots_record_id'] ?? $u['record_id']); } }
             $used_list = empty($used_ots_ids) ? '0' : implode(',', $used_ots_ids);
 
+            if ($debug_count === 0) {
+                @file_put_contents(sys_get_temp_dir() . '/revizor_am_debug.txt', "=== FIRST RECORD ===\nid=$id church_id=$church_id bank_date=$bank_date bank_amount=$bank_amount\nb_desc=" . mb_substr($b_desc,0,100) . "\nb_name=" . mb_substr($b_name,0,100) . "\nused_count=" . count($used_ots_ids) . "\nused_list=" . mb_substr($used_list,0,200) . "\nexp_types_str=$exp_types_str\nots_db_error=" . $ots_db->error . "\n\n");
+            }
+
             foreach ($passes as $days) {
                 if ($days === 'text') {
                     // SZÖVEGES KUTATÁS (Név, Közlemény, Határozati szám, Szolgáltatók) +/- 30 napban
