@@ -43,6 +43,11 @@ ensure_revizor_csrf_token();
 $conn = get_revizor_conn();
 $ots_db = get_ots_conn();
 
+// Check if TRANSFERS_TO_CONFERENCE exists in OTS DB (missing on some production servers)
+$has_tc_table = false;
+$tc_check_res = @$ots_db->query("SHOW TABLES LIKE 'transfers_to_conference'");
+if ($tc_check_res && $tc_check_res->num_rows > 0) $has_tc_table = true;
+
 log_activity('page_view', ['page' => 'reconciliation']);
 
 // Custom patterns CRUD
@@ -583,18 +588,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
     }
 
-    // transfers_to_conference prepared query
-    $tc_query = "SELECT tc.AMOUNT AS ots_amount,
-                        CONCAT(tc.YEAR, '-', LPAD(tc.MONTH, 2, '0'), '-', LPAD(tc.DAY, 2, '0')) AS ots_date,
-                        tc.CASH_DOCUMENT_NUMBER AS ots_doc,
-                        tc.id AS tc_id,
-                        CONCAT(tc.YEAR, '. ', tc.MONTH, '. havi konferencia utalás') AS ots_desc
-                  FROM transfers_to_conference tc
-                  WHERE tc.CHURCH_ID = ?
-                    AND tc.VIA_BANK = 1
-                    AND tc.AMOUNT = ABS(?)
-                    AND CONCAT(tc.YEAR, '-', LPAD(tc.MONTH, 2, '0'), '-', LPAD(tc.DAY, 2, '0')) BETWEEN ? AND ?";
-    $tc_stmt = $ots_db->prepare($tc_query);
+    // transfers_to_conference prepared query — skip if table doesn't exist (e.g. production OTS DB)
+    $tc_stmt = null;
+    if ($has_tc_table) {
+        $tc_query = "SELECT tc.AMOUNT AS ots_amount,
+                            CONCAT(tc.YEAR, '-', LPAD(tc.MONTH, 2, '0'), '-', LPAD(tc.DAY, 2, '0')) AS ots_date,
+                            tc.CASH_DOCUMENT_NUMBER AS ots_doc,
+                            tc.id AS tc_id,
+                            CONCAT(tc.YEAR, '. ', tc.MONTH, '. havi konferencia utalás') AS ots_desc
+                      FROM transfers_to_conference tc
+                      WHERE tc.CHURCH_ID = ?
+                        AND tc.VIA_BANK = 1
+                        AND tc.AMOUNT = ABS(?)
+                        AND CONCAT(tc.YEAR, '-', LPAD(tc.MONTH, 2, '0'), '-', LPAD(tc.DAY, 2, '0')) BETWEEN ? AND ?";
+        $tc_stmt = $ots_db->prepare($tc_query);
+    }
 
     if ($unmatched && $unmatched->num_rows > 0) {
         while ($row = $unmatched->fetch_assoc()) {
@@ -1204,21 +1212,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $fb_ots_amount = abs(floatval($fb_row['ots_amount']));
                     $fb_ots_date = $fb_row['ots_date'];
                     // TRANSFERS_TO_CONFERENCE keresés: CHURCH_ID + AMOUNT egyezés ±70 napban
-                    $tc_fb = $ots_db->prepare("SELECT tc.id, tc.AMOUNT, tc.YEAR, tc.MONTH, tc.DAY, tc.VIA_BANK,
-                        CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')) AS tc_date
-                        FROM TRANSFERS_TO_CONFERENCE tc
-                        WHERE tc.CHURCH_ID = ? AND tc.AMOUNT = ? AND tc.VIA_BANK = 1
-                        AND CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0'))
-                            BETWEEN DATE_SUB(?, INTERVAL 70 DAY) AND DATE_ADD(?, INTERVAL 70 DAY)
-                        ORDER BY ABS(DATEDIFF(CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')), ?)) ASC
-                        LIMIT 1");
-                    if ($tc_fb) {
-                        $tc_fb->bind_param('idsss', $church_id, $fb_ots_amount, $fb_ots_date, $fb_ots_date, $fb_ots_date);
-                        $tc_fb->execute();
-                        $tc_fb_res = $tc_fb->get_result();
-                        if ($tc_fb_res && $tc_fb_res->num_rows > 0) {
-                            $tc_fb_row = $tc_fb_res->fetch_assoc();
-                            $existing[] = ['ots_record_id' => -1 * (int)$tc_fb_row['id']];
+                    if ($has_tc_table) {
+                        $tc_fb = $ots_db->prepare("SELECT tc.id, tc.AMOUNT, tc.YEAR, tc.MONTH, tc.DAY, tc.VIA_BANK,
+                            CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')) AS tc_date
+                            FROM TRANSFERS_TO_CONFERENCE tc
+                            WHERE tc.CHURCH_ID = ? AND tc.AMOUNT = ? AND tc.VIA_BANK = 1
+                            AND CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0'))
+                                BETWEEN DATE_SUB(?, INTERVAL 70 DAY) AND DATE_ADD(?, INTERVAL 70 DAY)
+                            ORDER BY ABS(DATEDIFF(CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')), ?)) ASC
+                            LIMIT 1");
+                        if ($tc_fb) {
+                            $tc_fb->bind_param('idsss', $church_id, $fb_ots_amount, $fb_ots_date, $fb_ots_date, $fb_ots_date);
+                            $tc_fb->execute();
+                            $tc_fb_res = $tc_fb->get_result();
+                            if ($tc_fb_res && $tc_fb_res->num_rows > 0) {
+                                $tc_fb_row = $tc_fb_res->fetch_assoc();
+                                $existing[] = ['ots_record_id' => -1 * (int)$tc_fb_row['id']];
+                            }
                         }
                     }
                 }
@@ -1276,7 +1286,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                 }
             }
             // TRANSFERS_TO_CONFERENCE rekordok
-            if (!empty($tc_ids)) {
+            if (!empty($tc_ids) && $has_tc_table) {
                 $tc_list = implode(',', array_fill(0, count($tc_ids), '?'));
                 $tc_sql = "SELECT tc.id AS TC_ID, tc.YEAR, tc.MONTH, tc.DAY, tc.AMOUNT, tc.VIA_BANK,
                                   tc.CASH_DOCUMENT_NUMBER, tc.MODIFIED,
@@ -1499,7 +1509,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     }
 
     // TRANSFERS_TO_CONFERENCE keresés — havi átutalások (pl. "Egyházterületnek elutalt")
-    if ($unmatched_search && !empty($bank_date)) {
+    if ($has_tc_table && $unmatched_search && !empty($bank_date)) {
         $tc_sql = "SELECT tc.id AS TC_ID, tc.YEAR, tc.MONTH, tc.DAY, tc.AMOUNT, tc.VIA_BANK,
                           tc.CASH_DOCUMENT_NUMBER, tc.MODIFIED,
                           CONCAT(tc.YEAR, '-', LPAD(tc.MONTH,2,'0'), '-', LPAD(tc.DAY,2,'0')) AS DATETIME,
@@ -1733,7 +1743,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $rows[] = $r;
         }
         // TRANSFERS_TO_CONFERENCE szöveges keresés — a leírás tartalmazza a kulcsszavakat
-        if (!empty($bank_date)) {
+        if ($has_tc_table && !empty($bank_date)) {
             $tc_like_parts = [];
             foreach ($keywords as $kw) {
                 $esc_kw = $ots_db->real_escape_string($kw);
@@ -1953,7 +1963,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
                     $doc_value = $doc_row['CASH_DOCUMENT_NUMBER'] ?? '';
                 }
             }
-        } elseif ($ots_record_id < 0) {
+    } elseif ($ots_record_id < 0 && $has_tc_table) {
             $tc_doc_id = abs($ots_record_id);
             $tc_doc_stmt = $ots_db->prepare("SELECT CASH_DOCUMENT_NUMBER FROM TRANSFERS_TO_CONFERENCE WHERE id = ?");
             if ($tc_doc_stmt) {
@@ -2100,7 +2110,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
         }
 
         // TRANSFERS_TO_CONFERENCE rekordok lekérdezése
-        if (!empty($tc_ids)) {
+        if ($has_tc_table && !empty($tc_ids)) {
             $tc_list = implode(',', array_fill(0, count($tc_ids), '?'));
             $tc_stmt = $ots_db->prepare("SELECT id AS RECORD_ID, AMOUNT, CONCAT(YEAR, '-', LPAD(MONTH,2,'0'), '-', LPAD(DAY,2,'0')) AS DATETIME, CASH_DOCUMENT_NUMBER FROM TRANSFERS_TO_CONFERENCE WHERE id IN ($tc_list)");
             if ($tc_stmt) {
@@ -2223,7 +2233,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
             $doc_list = !empty($item_docs) ? implode(', ', array_unique($item_docs)) : ((string)$record_id);
             if ($earliest_date !== null) $ots_date_only = $earliest_date;
             if (!empty($doc_list)) $ots_doc = $doc_list;
-        } elseif ($record_id < 0) {
+        } elseif ($record_id < 0 && $has_tc_table) {
             // TRANSFERS_TO_CONFERENCE — negatív record_id
             $tc_id = abs($record_id);
             $tc_item = $ots_db->prepare("SELECT id, AMOUNT, CONCAT(YEAR, '-', LPAD(MONTH,2,'0'), '-', LPAD(DAY,2,'0')) AS DATETIME, CASH_DOCUMENT_NUMBER FROM TRANSFERS_TO_CONFERENCE WHERE id = ?");
