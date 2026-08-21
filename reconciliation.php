@@ -5159,7 +5159,7 @@ function runAutoMatch() {
             const el = document.getElementById('match-progress-status'); if (el) el.remove();
             window.location.reload();
         } else {
-            alert('Hiba történt a futtatás során!');
+            alert('Hiba: ' + (result.message || JSON.stringify(result) || 'Ismeretlen hiba'));
         }
     })
     .finally(() => { finishTimer(); });
