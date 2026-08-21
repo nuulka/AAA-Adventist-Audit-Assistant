@@ -508,13 +508,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
 
 // UTÓLAGOS AUTOMATIKUS PÁROSÍTÁS LOGIKA
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'auto_match') {
+    ob_start();
     if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], (string)$_POST['csrf_token'])) {
+        ob_end_clean();
+        header('Content-Type: application/json');
         echo json_encode(['status' => 'ERROR', 'message' => 'CSRF token mismatch']);
         exit;
     }
     header('Content-Type: application/json');
     // only admin may run auto-match
-    if (!is_admin()) { echo json_encode(['status' => 'ERROR', 'message' => 'Only admin may run auto-match']); exit; }
+    if (!is_admin()) { ob_end_clean(); echo json_encode(['status' => 'ERROR', 'message' => 'Only admin may run auto-match']); exit; }
     @set_time_limit(300);
 
     $mode = $_POST['match_mode'] ?? 'progressive';
@@ -523,9 +526,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['
     $all_churches = isset($_POST['all_churches']) && $_POST['all_churches'] === '1';
 
     if (!$all_churches && $filter_church_id <= 0) {
+        ob_end_clean();
+        header('Content-Type: application/json');
         echo json_encode(['status' => 'ERROR', 'message' => 'Előbb válassz ki egy gyülekezetet a szűrőben!']);
         exit;
     }
+
+    try {
 
     // Segédtábla: transfers_to_conference utalás felismerése
     $month_query_tc = null;
@@ -1071,8 +1078,16 @@ $ots_query = "SELECT RECORD_ID, MAX(CASH_DOCUMENT_NUMBER) AS ots_doc, MAX(DATETI
     $log_stmt->execute();
     $log_id = $log_stmt->insert_id;
 
+    ob_end_clean();
     echo json_encode(['status' => 'OK', 'matched' => $total_matched, 'total' => $total_records, 'details' => $stats, 'log_id' => $log_id]);
     exit;
+
+    } catch (Throwable $e) {
+        ob_end_clean();
+        header('Content-Type: application/json');
+        echo json_encode(['status' => 'ERROR', 'message' => $e->getMessage(), 'file' => $e->getFile(), 'line' => $e->getLine()]);
+        exit;
+    }
 }
 
 // AJAX: Auto-match napló lekérése
